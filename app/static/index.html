@@ -117,6 +117,11 @@
         }
 
 
+        .state-torque-off {
+            color: #F59E0B;
+        }
+
+
         .setup-controls {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -142,7 +147,7 @@
 
 
         .torque-disable-button {
-            background: #64748B;
+            background: #F59E0B;
         }
 
 
@@ -385,7 +390,7 @@
 
             <div
                 id="torque-state"
-                class="status-item state-off"
+                class="status-item state-torque-off"
             >
                 ● TORQUE DISABLED
             </div>
@@ -690,7 +695,7 @@
                 "● TORQUE DISABLED";
 
             torqueElement.className =
-                "status-item state-off";
+                "status-item state-torque-off";
 
         }
 
