@@ -9,6 +9,7 @@ from dynamixel_sdk import (
     COMM_SUCCESS,
 )
 from litestar import Litestar, get, post
+from litestar.static_files.config import StaticFilesConfig
 
 
 # ============================================================
@@ -596,5 +597,12 @@ app = Litestar(
         stop_motor,
         command_retract,
         command_deploy,
+    ],
+    static_files_config=[
+        StaticFilesConfig(
+            directories=["/app/static"],
+            path="/",
+            html_mode=True,
+        )
     ],
 )
