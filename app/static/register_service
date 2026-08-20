@@ -1,7 +1,7 @@
 {
     "name": "Winch Control",
     "description": "CTD winch control interface",
-    "icon": "mdi-winch",
+    "icon": "mdi-lightbulb",
     "company": "Luca Sidoti",
     "version": "0.1.0",
     "webpage": "",
