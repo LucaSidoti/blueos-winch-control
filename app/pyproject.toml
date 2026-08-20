@@ -1,14 +1,12 @@
 [project]
-name = "quickstart"
-version = "0.0.2"
-description = "BlueOS QuickStart Example Extension"
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-]
+name = "winch-control"
+version = "0.1.0"
+description = "BlueOS winch control extension"
+
 dependencies = [
     "requests",
-    "litestar[standard]",
+    "litestar",
+    "uvicorn",
+    "dynamixel-sdk",
 ]
 
