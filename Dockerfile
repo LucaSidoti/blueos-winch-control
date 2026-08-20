@@ -4,6 +4,7 @@ COPY app /app
 RUN python -m pip install /app --extra-index-url https://www.piwheels.org/simple
 
 EXPOSE 8000/tcp
+EXPOSE 14560/udp
 
 LABEL version="0.1.0"
 
@@ -12,7 +13,8 @@ ARG IMAGE_NAME
 LABEL permissions='\
 {\
   "ExposedPorts": {\
-    "8000/tcp": {}\
+    "8000/tcp": {},\
+    "14560/udp": {}\
   },\
   "HostConfig": {\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
@@ -27,6 +29,11 @@ LABEL permissions='\
       "8000/tcp": [\
         {\
           "HostPort": ""\
+        }\
+      ],\
+      "14560/udp": [\
+        {\
+          "HostPort": "14560"\
         }\
       ]\
     }\
