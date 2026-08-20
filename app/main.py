@@ -8,6 +8,7 @@ from dynamixel_sdk import (
     PacketHandler,
     COMM_SUCCESS,
 )
+
 from litestar import Litestar, get, post
 from litestar.static_files.config import StaticFilesConfig
 
@@ -61,7 +62,10 @@ direction = 0
 speed_level = 0
 current_velocity = 0
 
-# Prevent simultaneous requests from trying to access
+initialized = False
+torque_enabled = False
+
+# Prevent simultaneous API requests from accessing
 # the serial port at the same time.
 motor_lock = Lock()
 
@@ -73,10 +77,8 @@ motor_lock = Lock()
 def open_motor_port():
     """
     Open the Dynamixel serial port and configure the baud rate.
-
-    Returns:
-        (port, packet)
     """
+
     if not Path(DEVICE_NAME).exists():
         raise RuntimeError(f"{DEVICE_NAME} does not exist")
 
@@ -99,6 +101,7 @@ def check_result(packet, comm_result, dxl_error, action):
     """
     Check the result of a Dynamixel communication operation.
     """
+
     if comm_result != COMM_SUCCESS:
         raise RuntimeError(
             f"{action}: {packet.getTxRxResult(comm_result)}"
@@ -114,14 +117,13 @@ def write_velocity(velocity: int):
     """
     Send a signed goal velocity to the Dynamixel.
     """
+
     global current_velocity
 
     with motor_lock:
         port, packet = open_motor_port()
 
         try:
-            # Dynamixel expects the signed velocity value
-            # as a 32-bit register value.
             command = velocity & 0xFFFFFFFF
 
             comm_result, dxl_error = packet.write4ByteTxRx(
@@ -146,8 +148,9 @@ def write_velocity(velocity: int):
 
 def get_motor_state() -> dict:
     """
-    Return the current software-side winch state.
+    Return the current application-side motor state.
     """
+
     rpm = abs(current_velocity) * DYNAMIXEL_RPM_PER_UNIT
 
     if direction == -1:
@@ -159,6 +162,8 @@ def get_motor_state() -> dict:
 
     return {
         "success": True,
+        "initialized": initialized,
+        "torque_enabled": torque_enabled,
         "status": status_text,
         "direction": direction,
         "speed_level": (
@@ -168,6 +173,23 @@ def get_motor_state() -> dict:
         "velocity": current_velocity,
         "rpm": round(rpm, 1),
     }
+
+
+def require_motor_ready():
+    """
+    Prevent movement unless the motor has been initialized
+    and torque has been enabled.
+    """
+
+    if not initialized:
+        raise RuntimeError(
+            "Motor is not initialized"
+        )
+
+    if not torque_enabled:
+        raise RuntimeError(
+            "Motor torque is not enabled"
+        )
 
 
 # ============================================================
@@ -192,6 +214,7 @@ def status() -> dict:
 
 @get("/motor/ping", sync_to_thread=True)
 def ping_motor() -> dict:
+
     try:
         with motor_lock:
             port, packet = open_motor_port()
@@ -239,11 +262,14 @@ def initialize_motor() -> dict:
     """
     Configure the Dynamixel for velocity control.
 
-    Torque remains disabled when initialization is complete.
+    Torque remains disabled after initialization.
     """
+
     global direction
     global speed_level
     global current_velocity
+    global initialized
+    global torque_enabled
 
     try:
         with motor_lock:
@@ -304,22 +330,47 @@ def initialize_motor() -> dict:
                     "Set profile acceleration",
                 )
 
+                # ------------------------------------------------
+                # Ensure goal velocity is zero
+                # ------------------------------------------------
+
+                comm_result, dxl_error = packet.write4ByteTxRx(
+                    port,
+                    DXL_ID,
+                    ADDR_GOAL_VELOCITY,
+                    0,
+                )
+
+                check_result(
+                    packet,
+                    comm_result,
+                    dxl_error,
+                    "Set zero velocity",
+                )
+
                 direction = 0
                 speed_level = 0
                 current_velocity = 0
 
+                initialized = True
+                torque_enabled = False
+
                 return {
                     "success": True,
+                    "initialized": True,
+                    "torque_enabled": False,
                     "motor_id": DXL_ID,
                     "operating_mode": "velocity",
                     "profile_acceleration": PROFILE_ACCELERATION,
-                    "torque_enabled": False,
                 }
 
             finally:
                 port.closePort()
 
     except Exception as exc:
+        initialized = False
+        torque_enabled = False
+
         return {
             "success": False,
             "error": str(exc),
@@ -327,12 +378,20 @@ def initialize_motor() -> dict:
 
 
 # ============================================================
-# TORQUE CONTROL
+# TORQUE ENABLE
 # ============================================================
 
 @post("/motor/torque/enable", sync_to_thread=True)
 def enable_torque() -> dict:
+
+    global torque_enabled
+
     try:
+        if not initialized:
+            raise RuntimeError(
+                "Initialize the motor before enabling torque"
+            )
+
         with motor_lock:
             port, packet = open_motor_port()
 
@@ -351,10 +410,13 @@ def enable_torque() -> dict:
                     "Enable torque",
                 )
 
+                torque_enabled = True
+
                 return {
                     "success": True,
-                    "motor_id": DXL_ID,
+                    "initialized": True,
                     "torque_enabled": True,
+                    "motor_id": DXL_ID,
                 }
 
             finally:
@@ -367,18 +429,27 @@ def enable_torque() -> dict:
         }
 
 
+# ============================================================
+# TORQUE DISABLE
+# ============================================================
+
 @post("/motor/torque/disable", sync_to_thread=True)
 def disable_torque() -> dict:
+
     global direction
     global speed_level
     global current_velocity
+    global torque_enabled
 
     try:
         with motor_lock:
             port, packet = open_motor_port()
 
             try:
-                # Stop before disabling torque.
+                # ------------------------------------------------
+                # Always command zero velocity first
+                # ------------------------------------------------
+
                 comm_result, dxl_error = packet.write4ByteTxRx(
                     port,
                     DXL_ID,
@@ -392,6 +463,10 @@ def disable_torque() -> dict:
                     dxl_error,
                     "Stop motor",
                 )
+
+                # ------------------------------------------------
+                # Disable torque
+                # ------------------------------------------------
 
                 comm_result, dxl_error = packet.write1ByteTxRx(
                     port,
@@ -410,11 +485,13 @@ def disable_torque() -> dict:
                 direction = 0
                 speed_level = 0
                 current_velocity = 0
+                torque_enabled = False
 
                 return {
                     "success": True,
-                    "motor_id": DXL_ID,
+                    "initialized": initialized,
                     "torque_enabled": False,
+                    "motor_id": DXL_ID,
                 }
 
             finally:
@@ -442,6 +519,7 @@ def motor_state() -> dict:
 
 @post("/motor/stop", sync_to_thread=True)
 def stop_motor() -> dict:
+
     global direction
     global speed_level
 
@@ -466,50 +544,57 @@ def stop_motor() -> dict:
 
 @post("/motor/retract", sync_to_thread=True)
 def command_retract() -> dict:
+
     global direction
     global speed_level
 
     try:
+        require_motor_ready()
 
         # --------------------------------------------------------
-        # Already retracting
-        # Increase retract speed
+        # Already retracting:
+        # increase retract speed
         # --------------------------------------------------------
 
         if direction == -1:
+
             if speed_level < len(SPEED_LEVELS) - 1:
                 speed_level += 1
 
             velocity = -SPEED_LEVELS[speed_level]
+
             write_velocity(velocity)
 
         # --------------------------------------------------------
-        # Currently deploying
-        # Reduce deployment speed first
+        # Currently deploying:
+        # reduce deploy speed first
         # --------------------------------------------------------
 
         elif direction == 1:
+
             if speed_level > 0:
+
                 speed_level -= 1
 
                 velocity = SPEED_LEVELS[speed_level]
+
                 write_velocity(velocity)
 
             else:
-                # At minimum deployment speed:
-                # opposite command stops the winch.
                 return stop_motor()
 
         # --------------------------------------------------------
-        # Currently stopped
-        # Start retracting at speed level 1
+        # Currently stopped:
+        # start retracting at level 1
         # --------------------------------------------------------
 
         else:
+
             direction = -1
             speed_level = 0
 
             velocity = -SPEED_LEVELS[speed_level]
+
             write_velocity(velocity)
 
         return get_motor_state()
@@ -527,50 +612,57 @@ def command_retract() -> dict:
 
 @post("/motor/deploy", sync_to_thread=True)
 def command_deploy() -> dict:
+
     global direction
     global speed_level
 
     try:
+        require_motor_ready()
 
         # --------------------------------------------------------
-        # Already deploying
-        # Increase deployment speed
+        # Already deploying:
+        # increase deploy speed
         # --------------------------------------------------------
 
         if direction == 1:
+
             if speed_level < len(SPEED_LEVELS) - 1:
                 speed_level += 1
 
             velocity = SPEED_LEVELS[speed_level]
+
             write_velocity(velocity)
 
         # --------------------------------------------------------
-        # Currently retracting
-        # Reduce retract speed first
+        # Currently retracting:
+        # reduce retract speed first
         # --------------------------------------------------------
 
         elif direction == -1:
+
             if speed_level > 0:
+
                 speed_level -= 1
 
                 velocity = -SPEED_LEVELS[speed_level]
+
                 write_velocity(velocity)
 
             else:
-                # At minimum retract speed:
-                # opposite command stops the winch.
                 return stop_motor()
 
         # --------------------------------------------------------
-        # Currently stopped
-        # Start deploying at speed level 1
+        # Currently stopped:
+        # start deploying at level 1
         # --------------------------------------------------------
 
         else:
+
             direction = 1
             speed_level = 0
 
             velocity = SPEED_LEVELS[speed_level]
+
             write_velocity(velocity)
 
         return get_motor_state()
