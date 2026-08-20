@@ -5,7 +5,7 @@ RUN python -m pip install /app --extra-index-url https://www.piwheels.org/simple
 
 EXPOSE 8000/tcp
 
-LABEL version="0.0.3"
+LABEL version="0.1.0"
 
 ARG IMAGE_NAME
 
@@ -15,7 +15,6 @@ LABEL permissions='\
     "8000/tcp": {}\
   },\
   "HostConfig": {\
-    "Binds":["/usr/blueos/extensions/$IMAGE_NAME:/app"],\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
     "PortBindings": {\
       "8000/tcp": [\
@@ -39,17 +38,21 @@ LABEL authors='[\
 ARG MAINTAINER
 ARG MAINTAINER_EMAIL
 LABEL company='{\
-        "about": "",\
-        "name": "$MAINTAINER",\
-        "email": "$MAINTAINER_EMAIL"\
-    }'
-LABEL type="example"
+    "about": "",\
+    "name": "$MAINTAINER",\
+    "email": "$MAINTAINER_EMAIL"\
+}'
+
+LABEL type="device-integration"
+
 ARG REPO
 ARG OWNER
+
 LABEL readme='https://raw.githubusercontent.com/$OWNER/$REPO/{tag}/README.md'
 LABEL links='{\
-        "source": "https://github.com/$OWNER/$REPO"\
-    }'
+    "source": "https://github.com/$OWNER/$REPO"\
+}'
+
 LABEL requirements="core >= 1.1"
 
-ENTRYPOINT litestar run --host 0.0.0.0
+ENTRYPOINT ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "/app"]
