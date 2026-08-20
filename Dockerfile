@@ -16,6 +16,13 @@ LABEL permissions='\
   },\
   "HostConfig": {\
     "ExtraHosts": ["host.docker.internal:host-gateway"],\
+    "Devices": [\
+      {\
+        "PathOnHost": "/dev/ttyUSB0",\
+        "PathInContainer": "/dev/ttyUSB0",\
+        "CgroupPermissions": "rwm"\
+      }\
+    ],\
     "PortBindings": {\
       "8000/tcp": [\
         {\
