@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 
 from dynamixel_sdk import (
     PortHandler,
@@ -11,6 +11,8 @@ from dynamixel_sdk import (
 
 from litestar import Litestar, get, post
 from litestar.static_files.config import StaticFilesConfig
+
+from pymavlink import mavutil
 
 
 # ============================================================
@@ -43,10 +45,23 @@ PROFILE_ACCELERATION = 1
 # WINCH SETTINGS
 # ============================================================
 
-# Dynamixel velocity unit = 0.229 RPM
 DYNAMIXEL_RPM_PER_UNIT = 0.229
 
 SPEED_LEVELS = [20, 40, 60, 80, 100]
+
+
+# ============================================================
+# MAVLINK SETTINGS
+# ============================================================
+
+MAVLINK_PORT = 14560
+
+# MAV_CMD_USER_1
+WINCH_MAV_CMD = 31000
+
+WINCH_RETRACT = 1
+WINCH_DEPLOY = 2
+WINCH_STOP = 3
 
 
 # ============================================================
@@ -65,8 +80,6 @@ current_velocity = 0
 initialized = False
 torque_enabled = False
 
-# Prevent simultaneous API requests from accessing
-# the serial port at the same time.
 motor_lock = Lock()
 
 
@@ -155,8 +168,10 @@ def get_motor_state() -> dict:
 
     if direction == -1:
         status_text = "retracting"
+
     elif direction == 1:
         status_text = "deploying"
+
     else:
         status_text = "stopped"
 
@@ -198,6 +213,7 @@ def require_motor_ready():
 
 @get("/status", sync_to_thread=False)
 def status() -> dict:
+
     return {
         "extension": "winch-control",
         "device": DEVICE_NAME,
@@ -205,6 +221,7 @@ def status() -> dict:
         "baudrate": BAUDRATE,
         "protocol_version": PROTOCOL_VERSION,
         "motor_id": DXL_ID,
+        "mavlink_port": MAVLINK_PORT,
     }
 
 
@@ -216,10 +233,13 @@ def status() -> dict:
 def ping_motor() -> dict:
 
     try:
+
         with motor_lock:
+
             port, packet = open_motor_port()
 
             try:
+
                 model_number, comm_result, dxl_error = packet.ping(
                     port,
                     DXL_ID,
@@ -243,9 +263,11 @@ def ping_motor() -> dict:
                 }
 
             finally:
+
                 port.closePort()
 
     except Exception as exc:
+
         return {
             "success": False,
             "connected": False,
@@ -259,11 +281,6 @@ def ping_motor() -> dict:
 
 @post("/motor/initialize", sync_to_thread=True)
 def initialize_motor() -> dict:
-    """
-    Configure the Dynamixel for velocity control.
-
-    Torque remains disabled after initialization.
-    """
 
     global direction
     global speed_level
@@ -272,10 +289,13 @@ def initialize_motor() -> dict:
     global torque_enabled
 
     try:
+
         with motor_lock:
+
             port, packet = open_motor_port()
 
             try:
+
                 # ------------------------------------------------
                 # Disable torque before changing operating mode
                 # ------------------------------------------------
@@ -295,7 +315,7 @@ def initialize_motor() -> dict:
                 )
 
                 # ------------------------------------------------
-                # Set Velocity Control Mode
+                # Set velocity mode
                 # ------------------------------------------------
 
                 comm_result, dxl_error = packet.write1ByteTxRx(
@@ -313,7 +333,7 @@ def initialize_motor() -> dict:
                 )
 
                 # ------------------------------------------------
-                # Set acceleration profile
+                # Set profile acceleration
                 # ------------------------------------------------
 
                 comm_result, dxl_error = packet.write4ByteTxRx(
@@ -331,7 +351,7 @@ def initialize_motor() -> dict:
                 )
 
                 # ------------------------------------------------
-                # Ensure goal velocity is zero
+                # Ensure zero goal velocity
                 # ------------------------------------------------
 
                 comm_result, dxl_error = packet.write4ByteTxRx(
@@ -365,9 +385,11 @@ def initialize_motor() -> dict:
                 }
 
             finally:
+
                 port.closePort()
 
     except Exception as exc:
+
         initialized = False
         torque_enabled = False
 
@@ -387,15 +409,19 @@ def enable_torque() -> dict:
     global torque_enabled
 
     try:
+
         if not initialized:
+
             raise RuntimeError(
                 "Initialize the motor before enabling torque"
             )
 
         with motor_lock:
+
             port, packet = open_motor_port()
 
             try:
+
                 comm_result, dxl_error = packet.write1ByteTxRx(
                     port,
                     DXL_ID,
@@ -420,9 +446,11 @@ def enable_torque() -> dict:
                 }
 
             finally:
+
                 port.closePort()
 
     except Exception as exc:
+
         return {
             "success": False,
             "error": str(exc),
@@ -442,12 +470,15 @@ def disable_torque() -> dict:
     global torque_enabled
 
     try:
+
         with motor_lock:
+
             port, packet = open_motor_port()
 
             try:
+
                 # ------------------------------------------------
-                # Always command zero velocity first
+                # Stop first
                 # ------------------------------------------------
 
                 comm_result, dxl_error = packet.write4ByteTxRx(
@@ -495,9 +526,11 @@ def disable_torque() -> dict:
                 }
 
             finally:
+
                 port.closePort()
 
     except Exception as exc:
+
         return {
             "success": False,
             "error": str(exc),
@@ -510,6 +543,7 @@ def disable_torque() -> dict:
 
 @get("/motor/state", sync_to_thread=False)
 def motor_state() -> dict:
+
     return get_motor_state()
 
 
@@ -524,6 +558,7 @@ def stop_motor() -> dict:
     global speed_level
 
     try:
+
         write_velocity(0)
 
         direction = 0
@@ -532,6 +567,7 @@ def stop_motor() -> dict:
         return get_motor_state()
 
     except Exception as exc:
+
         return {
             "success": False,
             "error": str(exc),
@@ -549,6 +585,7 @@ def command_retract() -> dict:
     global speed_level
 
     try:
+
         require_motor_ready()
 
         # --------------------------------------------------------
@@ -581,11 +618,12 @@ def command_retract() -> dict:
                 write_velocity(velocity)
 
             else:
+
                 return stop_motor()
 
         # --------------------------------------------------------
         # Currently stopped:
-        # start retracting at level 1
+        # start retracting at speed level 1
         # --------------------------------------------------------
 
         else:
@@ -600,6 +638,7 @@ def command_retract() -> dict:
         return get_motor_state()
 
     except Exception as exc:
+
         return {
             "success": False,
             "error": str(exc),
@@ -617,6 +656,7 @@ def command_deploy() -> dict:
     global speed_level
 
     try:
+
         require_motor_ready()
 
         # --------------------------------------------------------
@@ -649,11 +689,12 @@ def command_deploy() -> dict:
                 write_velocity(velocity)
 
             else:
+
                 return stop_motor()
 
         # --------------------------------------------------------
         # Currently stopped:
-        # start deploying at level 1
+        # start deploying at speed level 1
         # --------------------------------------------------------
 
         else:
@@ -668,10 +709,127 @@ def command_deploy() -> dict:
         return get_motor_state()
 
     except Exception as exc:
+
         return {
             "success": False,
             "error": str(exc),
         }
+
+
+# ============================================================
+# MAVLINK LISTENER
+# ============================================================
+
+def mavlink_listener():
+    """
+    Listen for custom winch commands forwarded by the
+    BlueOS MAVLink Router.
+
+    IMPORTANT:
+    This test version only prints received commands.
+    It does not control the Dynamixel motor.
+    """
+
+    print(
+        f"MAVLink winch listener starting on UDP port {MAVLINK_PORT}",
+        flush=True,
+    )
+
+    try:
+
+        connection = mavutil.mavlink_connection(
+            f"udpin:0.0.0.0:{MAVLINK_PORT}"
+        )
+
+    except Exception as exc:
+
+        print(
+            f"Could not start MAVLink listener: {exc}",
+            flush=True,
+        )
+
+        return
+
+
+    while True:
+
+        try:
+
+            message = connection.recv_match(
+                blocking=True,
+                timeout=1,
+            )
+
+            if message is None:
+                continue
+
+
+            message_type = message.get_type()
+
+
+            if message_type != "COMMAND_LONG":
+                continue
+
+
+            if message.command != WINCH_MAV_CMD:
+                continue
+
+
+            command = int(
+                round(message.param1)
+            )
+
+
+            if command == WINCH_RETRACT:
+
+                print(
+                    "MAVLink winch command: RETRACT",
+                    flush=True,
+                )
+
+
+            elif command == WINCH_DEPLOY:
+
+                print(
+                    "MAVLink winch command: DEPLOY",
+                    flush=True,
+                )
+
+
+            elif command == WINCH_STOP:
+
+                print(
+                    "MAVLink winch command: STOP",
+                    flush=True,
+                )
+
+
+            else:
+
+                print(
+                    f"MAVLink winch command: UNKNOWN ({command})",
+                    flush=True,
+                )
+
+
+        except Exception as exc:
+
+            print(
+                f"MAVLink listener error: {exc}",
+                flush=True,
+            )
+
+
+# ============================================================
+# START MAVLINK LISTENER
+# ============================================================
+
+mavlink_thread = Thread(
+    target=mavlink_listener,
+    daemon=True,
+)
+
+mavlink_thread.start()
 
 
 # ============================================================
