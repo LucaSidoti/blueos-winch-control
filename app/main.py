@@ -56,12 +56,12 @@ SPEED_LEVELS = [20, 40, 60, 80, 100]
 
 MAVLINK_PORT = 14560
 
-# MAV_CMD_USER_1
-WINCH_MAV_CMD = 31000
+SERVO_NUMBER = 10
 
-WINCH_RETRACT = 1
-WINCH_DEPLOY = 2
-WINCH_STOP = 3
+PWM_RETRACT = 1100
+PWM_STOP = 1300
+PWM_IDLE = 1500
+PWM_DEPLOY = 1900
 
 
 # ============================================================
@@ -103,6 +103,7 @@ def open_motor_port():
 
     if not port.setBaudRate(BAUDRATE):
         port.closePort()
+
         raise RuntimeError(
             f"Could not set baud rate to {BAUDRATE}"
         )
@@ -205,6 +206,156 @@ def require_motor_ready():
         raise RuntimeError(
             "Motor torque is not enabled"
         )
+
+
+# ============================================================
+# INTERNAL WINCH COMMANDS
+# ============================================================
+
+def execute_stop() -> dict:
+    """
+    Stop the winch and reset the motion state.
+    """
+
+    global direction
+    global speed_level
+
+    write_velocity(0)
+
+    direction = 0
+    speed_level = 0
+
+    return get_motor_state()
+
+
+def execute_retract() -> dict:
+    """
+    Retract the cable.
+
+    Repeated commands increase retract speed.
+
+    If currently deploying, repeated retract commands
+    progressively reduce deploy speed until the winch stops.
+    """
+
+    global direction
+    global speed_level
+
+    require_motor_ready()
+
+    # --------------------------------------------------------
+    # Already retracting:
+    # increase retract speed
+    # --------------------------------------------------------
+
+    if direction == -1:
+
+        if speed_level < len(SPEED_LEVELS) - 1:
+            speed_level += 1
+
+        velocity = -SPEED_LEVELS[speed_level]
+
+        write_velocity(velocity)
+
+    # --------------------------------------------------------
+    # Currently deploying:
+    # reduce deploy speed first
+    # --------------------------------------------------------
+
+    elif direction == 1:
+
+        if speed_level > 0:
+
+            speed_level -= 1
+
+            velocity = SPEED_LEVELS[speed_level]
+
+            write_velocity(velocity)
+
+        else:
+
+            return execute_stop()
+
+    # --------------------------------------------------------
+    # Currently stopped:
+    # start retracting at level 1
+    # --------------------------------------------------------
+
+    else:
+
+        direction = -1
+        speed_level = 0
+
+        velocity = -SPEED_LEVELS[speed_level]
+
+        write_velocity(velocity)
+
+    return get_motor_state()
+
+
+def execute_deploy() -> dict:
+    """
+    Deploy the cable.
+
+    Repeated commands increase deploy speed.
+
+    If currently retracting, repeated deploy commands
+    progressively reduce retract speed until the winch stops.
+    """
+
+    global direction
+    global speed_level
+
+    require_motor_ready()
+
+    # --------------------------------------------------------
+    # Already deploying:
+    # increase deploy speed
+    # --------------------------------------------------------
+
+    if direction == 1:
+
+        if speed_level < len(SPEED_LEVELS) - 1:
+            speed_level += 1
+
+        velocity = SPEED_LEVELS[speed_level]
+
+        write_velocity(velocity)
+
+    # --------------------------------------------------------
+    # Currently retracting:
+    # reduce retract speed first
+    # --------------------------------------------------------
+
+    elif direction == -1:
+
+        if speed_level > 0:
+
+            speed_level -= 1
+
+            velocity = -SPEED_LEVELS[speed_level]
+
+            write_velocity(velocity)
+
+        else:
+
+            return execute_stop()
+
+    # --------------------------------------------------------
+    # Currently stopped:
+    # start deploying at level 1
+    # --------------------------------------------------------
+
+    else:
+
+        direction = 1
+        speed_level = 0
+
+        velocity = SPEED_LEVELS[speed_level]
+
+        write_velocity(velocity)
+
+    return get_motor_state()
 
 
 # ============================================================
@@ -548,23 +699,15 @@ def motor_state() -> dict:
 
 
 # ============================================================
-# STOP
+# HTTP STOP
 # ============================================================
 
 @post("/motor/stop", sync_to_thread=True)
 def stop_motor() -> dict:
 
-    global direction
-    global speed_level
-
     try:
 
-        write_velocity(0)
-
-        direction = 0
-        speed_level = 0
-
-        return get_motor_state()
+        return execute_stop()
 
     except Exception as exc:
 
@@ -575,67 +718,15 @@ def stop_motor() -> dict:
 
 
 # ============================================================
-# RETRACT
+# HTTP RETRACT
 # ============================================================
 
 @post("/motor/retract", sync_to_thread=True)
 def command_retract() -> dict:
 
-    global direction
-    global speed_level
-
     try:
 
-        require_motor_ready()
-
-        # --------------------------------------------------------
-        # Already retracting:
-        # increase retract speed
-        # --------------------------------------------------------
-
-        if direction == -1:
-
-            if speed_level < len(SPEED_LEVELS) - 1:
-                speed_level += 1
-
-            velocity = -SPEED_LEVELS[speed_level]
-
-            write_velocity(velocity)
-
-        # --------------------------------------------------------
-        # Currently deploying:
-        # reduce deploy speed first
-        # --------------------------------------------------------
-
-        elif direction == 1:
-
-            if speed_level > 0:
-
-                speed_level -= 1
-
-                velocity = SPEED_LEVELS[speed_level]
-
-                write_velocity(velocity)
-
-            else:
-
-                return stop_motor()
-
-        # --------------------------------------------------------
-        # Currently stopped:
-        # start retracting at speed level 1
-        # --------------------------------------------------------
-
-        else:
-
-            direction = -1
-            speed_level = 0
-
-            velocity = -SPEED_LEVELS[speed_level]
-
-            write_velocity(velocity)
-
-        return get_motor_state()
+        return execute_retract()
 
     except Exception as exc:
 
@@ -646,67 +737,15 @@ def command_retract() -> dict:
 
 
 # ============================================================
-# DEPLOY
+# HTTP DEPLOY
 # ============================================================
 
 @post("/motor/deploy", sync_to_thread=True)
 def command_deploy() -> dict:
 
-    global direction
-    global speed_level
-
     try:
 
-        require_motor_ready()
-
-        # --------------------------------------------------------
-        # Already deploying:
-        # increase deploy speed
-        # --------------------------------------------------------
-
-        if direction == 1:
-
-            if speed_level < len(SPEED_LEVELS) - 1:
-                speed_level += 1
-
-            velocity = SPEED_LEVELS[speed_level]
-
-            write_velocity(velocity)
-
-        # --------------------------------------------------------
-        # Currently retracting:
-        # reduce retract speed first
-        # --------------------------------------------------------
-
-        elif direction == -1:
-
-            if speed_level > 0:
-
-                speed_level -= 1
-
-                velocity = -SPEED_LEVELS[speed_level]
-
-                write_velocity(velocity)
-
-            else:
-
-                return stop_motor()
-
-        # --------------------------------------------------------
-        # Currently stopped:
-        # start deploying at speed level 1
-        # --------------------------------------------------------
-
-        else:
-
-            direction = 1
-            speed_level = 0
-
-            velocity = SPEED_LEVELS[speed_level]
-
-            write_velocity(velocity)
-
-        return get_motor_state()
+        return execute_deploy()
 
     except Exception as exc:
 
@@ -714,6 +753,37 @@ def command_deploy() -> dict:
             "success": False,
             "error": str(exc),
         }
+
+
+# ============================================================
+# MAVLINK HELPERS
+# ============================================================
+
+def reset_servo_signal(
+    connection,
+    target_system,
+    target_component,
+):
+    """
+    Reset SERVO10 to the neutral value.
+
+    This acts as an acknowledgement so that the next
+    identical D-pad press produces another detectable change.
+    """
+
+    connection.mav.command_long_send(
+        target_system,
+        target_component,
+        mavutil.mavlink.MAV_CMD_DO_SET_SERVO,
+        0,
+        SERVO_NUMBER,
+        PWM_IDLE,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
 
 
 # ============================================================
@@ -722,12 +792,21 @@ def command_deploy() -> dict:
 
 def mavlink_listener():
     """
-    Listen for custom winch commands forwarded by the
-    BlueOS MAVLink Router.
+    Listen for SERVO10 values from ArduPilot.
 
-    IMPORTANT:
-    This test version only prints received commands.
-    It does not control the Dynamixel motor.
+    QGroundControl uses SERVO10 as a software command channel:
+
+        1100 -> Retract / faster
+        1300 -> Stop
+        1500 -> Idle
+        1900 -> Deploy / faster
+
+    After a command is detected, SERVO10 is reset to 1500.
+    The listener waits until that reset is visible in telemetry
+    before accepting another command.
+
+    This prevents duplicate execution from repeated
+    SERVO_OUTPUT_RAW packets.
     """
 
     print(
@@ -751,11 +830,30 @@ def mavlink_listener():
         return
 
 
+    # --------------------------------------------------------
+    # Startup synchronization
+    # --------------------------------------------------------
+    #
+    # Do not act immediately on whatever SERVO10 value happens
+    # to exist when the extension starts.
+    #
+    # First receive SERVO_OUTPUT_RAW, determine the autopilot
+    # system/component IDs, reset SERVO10 to 1500, then wait
+    # until 1500 is observed before accepting commands.
+    # --------------------------------------------------------
+
+    command_ready = False
+
+    target_system = None
+    target_component = None
+
+
     while True:
 
         try:
 
             message = connection.recv_match(
+                type="SERVO_OUTPUT_RAW",
                 blocking=True,
                 timeout=1,
             )
@@ -764,52 +862,170 @@ def mavlink_listener():
                 continue
 
 
-            message_type = message.get_type()
+            target_system = message.get_srcSystem()
+            target_component = message.get_srcComponent()
+
+            pwm = message.servo10_raw
 
 
-            if message_type != "COMMAND_LONG":
+            # ------------------------------------------------
+            # Initial synchronization
+            # ------------------------------------------------
+
+            if not command_ready:
+
+                if pwm == PWM_IDLE:
+
+                    command_ready = True
+
+                    print(
+                        "MAVLink winch control ready",
+                        flush=True,
+                    )
+
+                else:
+
+                    reset_servo_signal(
+                        connection,
+                        target_system,
+                        target_component,
+                    )
+
                 continue
 
 
-            if message.command != WINCH_MAV_CMD:
+            # ------------------------------------------------
+            # Idle
+            # ------------------------------------------------
+
+            if pwm == PWM_IDLE:
                 continue
 
 
-            command = int(
-                round(message.param1)
-            )
+            # ------------------------------------------------
+            # Lock out additional telemetry packets until
+            # the reset to 1500 has been observed.
+            # ------------------------------------------------
+
+            command_ready = False
 
 
-            if command == WINCH_RETRACT:
+            # ------------------------------------------------
+            # RETRACT
+            # ------------------------------------------------
+
+            if pwm == PWM_RETRACT:
 
                 print(
-                    "MAVLink winch command: RETRACT",
+                    "Xbox command: RETRACT",
                     flush=True,
                 )
 
+                try:
 
-            elif command == WINCH_DEPLOY:
+                    result = execute_retract()
+
+                    print(
+                        (
+                            "Winch state: "
+                            f"{result['status']}, "
+                            f"speed level "
+                            f"{result['speed_level']}"
+                        ),
+                        flush=True,
+                    )
+
+                except Exception as exc:
+
+                    print(
+                        f"Retract command rejected: {exc}",
+                        flush=True,
+                    )
+
+
+            # ------------------------------------------------
+            # STOP
+            # ------------------------------------------------
+
+            elif pwm == PWM_STOP:
 
                 print(
-                    "MAVLink winch command: DEPLOY",
+                    "Xbox command: STOP",
                     flush=True,
                 )
 
+                try:
 
-            elif command == WINCH_STOP:
+                    result = execute_stop()
+
+                    print(
+                        "Winch stopped",
+                        flush=True,
+                    )
+
+                except Exception as exc:
+
+                    print(
+                        f"Stop command failed: {exc}",
+                        flush=True,
+                    )
+
+
+            # ------------------------------------------------
+            # DEPLOY
+            # ------------------------------------------------
+
+            elif pwm == PWM_DEPLOY:
 
                 print(
-                    "MAVLink winch command: STOP",
+                    "Xbox command: DEPLOY",
                     flush=True,
                 )
 
+                try:
+
+                    result = execute_deploy()
+
+                    print(
+                        (
+                            "Winch state: "
+                            f"{result['status']}, "
+                            f"speed level "
+                            f"{result['speed_level']}"
+                        ),
+                        flush=True,
+                    )
+
+                except Exception as exc:
+
+                    print(
+                        f"Deploy command rejected: {exc}",
+                        flush=True,
+                    )
+
+
+            # ------------------------------------------------
+            # UNKNOWN VALUE
+            # ------------------------------------------------
 
             else:
 
                 print(
-                    f"MAVLink winch command: UNKNOWN ({command})",
+                    f"SERVO10 value ignored: {pwm}",
                     flush=True,
                 )
+
+
+            # ------------------------------------------------
+            # Acknowledge the command by returning the
+            # software signalling channel to idle.
+            # ------------------------------------------------
+
+            reset_servo_signal(
+                connection,
+                target_system,
+                target_component,
+            )
 
 
         except Exception as exc:
