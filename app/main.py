@@ -34,6 +34,11 @@ ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_VELOCITY = 104
 ADDR_PROFILE_ACCELERATION = 108
+ADDR_PRESENT_CURRENT = 126
+ADDR_PRESENT_VELOCITY = 128
+ADDR_PRESENT_POSITION = 132
+ADDR_PRESENT_INPUT_VOLTAGE = 144
+ADDR_PRESENT_TEMPERATURE = 146
 ADDR_PRESENT_POSITION = 132
 
 TORQUE_ENABLE = 1
@@ -43,6 +48,11 @@ VELOCITY_MODE = 1
 WINCH_PROFILE_ACCELERATION = 1
 DYNAMIXEL_RPM_PER_UNIT = 0.229
 SPEED_LEVELS = [20, 40, 60, 80, 100]
+
+PRESENT_CURRENT_MA_PER_UNIT = 2.69
+PRESENT_VELOCITY_RPM_PER_UNIT = 0.229
+PRESENT_VOLTAGE_V_PER_UNIT = 0.1
+POSITION_DEG_PER_COUNT = 360.0 / 4096.0
 
 
 # ============================================================
@@ -55,6 +65,11 @@ LOCK_BAUDRATE = 115_200
 LOCK_ADDR_OPERATING_MODE = 11
 LOCK_ADDR_TORQUE_ENABLE = 64
 LOCK_ADDR_PROFILE_ACCELERATION = 108
+ADDR_PRESENT_CURRENT = 126
+ADDR_PRESENT_VELOCITY = 128
+ADDR_PRESENT_POSITION = 132
+ADDR_PRESENT_INPUT_VOLTAGE = 144
+ADDR_PRESENT_TEMPERATURE = 146
 LOCK_ADDR_PROFILE_VELOCITY = 112
 LOCK_ADDR_GOAL_POSITION = 116
 
@@ -156,6 +171,54 @@ def set_bus_baudrate(port, baudrate):
         raise RuntimeError(
             f"Could not set bus baud rate to {baudrate}"
         )
+
+
+# ============================================================
+# TELEMETRY HELPERS
+# ============================================================
+
+def signed_16(value):
+    return value - 0x10000 if value & 0x8000 else value
+
+def signed_32(value):
+    return value - 0x100000000 if value & 0x80000000 else value
+
+def read_motor_telemetry(port, packet, motor_id, baudrate):
+    set_bus_baudrate(port, baudrate)
+
+    raw_current, comm_result, dxl_error = packet.read2ByteTxRx(port, motor_id, ADDR_PRESENT_CURRENT)
+    check_result(packet, comm_result, dxl_error, f"Read motor {motor_id} current")
+
+    raw_velocity, comm_result, dxl_error = packet.read4ByteTxRx(port, motor_id, ADDR_PRESENT_VELOCITY)
+    check_result(packet, comm_result, dxl_error, f"Read motor {motor_id} velocity")
+
+    raw_position, comm_result, dxl_error = packet.read4ByteTxRx(port, motor_id, ADDR_PRESENT_POSITION)
+    check_result(packet, comm_result, dxl_error, f"Read motor {motor_id} position")
+
+    raw_voltage, comm_result, dxl_error = packet.read2ByteTxRx(port, motor_id, ADDR_PRESENT_INPUT_VOLTAGE)
+    check_result(packet, comm_result, dxl_error, f"Read motor {motor_id} voltage")
+
+    raw_temperature, comm_result, dxl_error = packet.read1ByteTxRx(port, motor_id, ADDR_PRESENT_TEMPERATURE)
+    check_result(packet, comm_result, dxl_error, f"Read motor {motor_id} temperature")
+
+    return {
+        "current_a": round(signed_16(raw_current) * PRESENT_CURRENT_MA_PER_UNIT / 1000.0, 3),
+        "rpm": round(signed_32(raw_velocity) * PRESENT_VELOCITY_RPM_PER_UNIT, 2),
+        "position_deg": round(signed_32(raw_position) * POSITION_DEG_PER_COUNT, 1),
+        "voltage_v": round(raw_voltage * PRESENT_VOLTAGE_V_PER_UNIT, 1),
+        "temperature_c": int(raw_temperature),
+    }
+
+def read_all_telemetry():
+    with bus_lock:
+        port = open_bus()
+        packet = PacketHandler(PROTOCOL_VERSION)
+        try:
+            winch = read_motor_telemetry(port, packet, WINCH_ID, WINCH_BAUDRATE)
+            lock = read_motor_telemetry(port, packet, LOCK_ID, LOCK_BAUDRATE)
+        finally:
+            port.closePort()
+    return {"success": True, "winch": winch, "lock": lock}
 
 
 # ============================================================
@@ -980,6 +1043,14 @@ def toggle_lock() -> dict:
 # MOTOR STATE / MOTION HTTP ENDPOINTS
 # ============================================================
 
+@get("/motor/telemetry", sync_to_thread=True)
+def motor_telemetry() -> dict:
+    try:
+        return read_all_telemetry()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
 @get("/motor/state", sync_to_thread=False)
 def motor_state() -> dict:
     return get_motor_state()
@@ -1195,6 +1266,7 @@ app = Litestar(
         disable_torque,
         toggle_lock,
         motor_state,
+        motor_telemetry,
         stop_motor,
         command_retract,
         command_deploy,
