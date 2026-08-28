@@ -253,9 +253,38 @@
             min-height: 20px;
         }
 
+
+        .telemetry-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+        .telemetry-card {
+            background: #172033;
+            border-radius: 12px;
+            padding: 18px;
+        }
+        .telemetry-title {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .telemetry-row {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 20px;
+            align-items: center;
+            padding: 9px 0;
+            border-bottom: 1px solid rgba(148,163,184,0.12);
+        }
+        .telemetry-row:last-child { border-bottom: none; }
+        .telemetry-row span { color: #94A3B8; }
+        .telemetry-row strong { text-align: right; white-space: nowrap; }
+
         @media (max-width: 620px) {
             .controls,
-            .setup-controls {
+            .setup-controls,
+            .telemetry-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -372,6 +401,52 @@
         </div>
     </div>
 
+    <div class="panel">
+        <div class="setup-title">LIVE MOTOR TELEMETRY</div>
+
+        <div class="telemetry-grid">
+            <div class="telemetry-card">
+                <div class="telemetry-title">WINCH MOTOR</div>
+                <div class="telemetry-values">
+                    <div class="telemetry-name">Current</div>
+                    <div id="winch-current" class="telemetry-value">-- A</div>
+
+                    <div class="telemetry-name">RPM</div>
+                    <div id="winch-rpm-live" class="telemetry-value">-- RPM</div>
+
+                    <div class="telemetry-name">Position</div>
+                    <div id="winch-position" class="telemetry-value">--°</div>
+
+                    <div class="telemetry-name">Voltage</div>
+                    <div id="winch-voltage" class="telemetry-value">-- V</div>
+
+                    <div class="telemetry-name">Temperature</div>
+                    <div id="winch-temperature" class="telemetry-value">-- °C</div>
+                </div>
+            </div>
+
+            <div class="telemetry-card">
+                <div class="telemetry-title">LOCK MOTOR</div>
+                <div class="telemetry-values">
+                    <div class="telemetry-name">Current</div>
+                    <div id="lock-current" class="telemetry-value">-- A</div>
+
+                    <div class="telemetry-name">RPM</div>
+                    <div id="lock-rpm-live" class="telemetry-value">-- RPM</div>
+
+                    <div class="telemetry-name">Position</div>
+                    <div id="lock-position" class="telemetry-value">--°</div>
+
+                    <div class="telemetry-name">Voltage</div>
+                    <div id="lock-voltage" class="telemetry-value">-- V</div>
+
+                    <div class="telemetry-name">Temperature</div>
+                    <div id="lock-temperature" class="telemetry-value">-- °C</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="controls">
         <button
             id="retract-button"
@@ -434,6 +509,18 @@
     const stopButton = document.getElementById("stop-button");
     const deployButton = document.getElementById("deploy-button");
     const errorElement = document.getElementById("error");
+
+    const winchCurrentElement = document.getElementById("winch-current");
+    const winchRpmLiveElement = document.getElementById("winch-rpm-live");
+    const winchPositionElement = document.getElementById("winch-position");
+    const winchVoltageElement = document.getElementById("winch-voltage");
+    const winchTemperatureElement = document.getElementById("winch-temperature");
+
+    const lockCurrentElement = document.getElementById("lock-current");
+    const lockRpmLiveElement = document.getElementById("lock-rpm-live");
+    const lockPositionElement = document.getElementById("lock-position");
+    const lockVoltageElement = document.getElementById("lock-voltage");
+    const lockTemperatureElement = document.getElementById("lock-temperature");
 
     let motorConnected = false;
     let motorInitialized = false;
@@ -581,6 +668,70 @@
             }
 
             speedBlocks[i].style.color = "#F8FAFC";
+        }
+    }
+
+
+    function showTelemetryUnavailable() {
+        winchCurrentElement.textContent = "-- A";
+        winchRpmLiveElement.textContent = "-- RPM";
+        winchPositionElement.textContent = "--°";
+        winchVoltageElement.textContent = "-- V";
+        winchTemperatureElement.textContent = "-- °C";
+
+        lockCurrentElement.textContent = "-- A";
+        lockRpmLiveElement.textContent = "-- RPM";
+        lockPositionElement.textContent = "--°";
+        lockVoltageElement.textContent = "-- V";
+        lockTemperatureElement.textContent = "-- °C";
+    }
+
+
+    function updateTelemetry(data) {
+        if (!data || data.success !== true) {
+            showTelemetryUnavailable();
+            return;
+        }
+
+        const winch = data.winch;
+        const lock = data.lock;
+
+        winchCurrentElement.textContent =
+            `${winch.current_a.toFixed(3)} A`;
+        winchRpmLiveElement.textContent =
+            `${winch.rpm.toFixed(2)} RPM`;
+        winchPositionElement.textContent =
+            `${winch.position_deg.toFixed(1)}°`;
+        winchVoltageElement.textContent =
+            `${winch.voltage_v.toFixed(1)} V`;
+        winchTemperatureElement.textContent =
+            `${winch.temperature_c} °C`;
+
+        lockCurrentElement.textContent =
+            `${lock.current_a.toFixed(3)} A`;
+        lockRpmLiveElement.textContent =
+            `${lock.rpm.toFixed(2)} RPM`;
+        lockPositionElement.textContent =
+            `${lock.position_deg.toFixed(1)}°`;
+        lockVoltageElement.textContent =
+            `${lock.voltage_v.toFixed(1)} V`;
+        lockTemperatureElement.textContent =
+            `${lock.temperature_c} °C`;
+    }
+
+
+    async function refreshTelemetry() {
+        if (!motorConnected) {
+            showTelemetryUnavailable();
+            return;
+        }
+
+        try {
+            const data = await apiRequest("/motor/telemetry");
+            updateTelemetry(data);
+        }
+        catch (error) {
+            showTelemetryUnavailable();
         }
     }
 
@@ -783,10 +934,11 @@
     async function initializeInterface() {
         await checkConnection();
         await refreshState();
+        await refreshTelemetry();
     }
 
     initializeInterface();
-
+    setInterval(refreshTelemetry, 1000);
     setInterval(refreshState, 1000);
     setInterval(checkConnection, 3000);
 </script>
