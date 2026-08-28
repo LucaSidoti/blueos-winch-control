@@ -153,9 +153,9 @@ def write_velocity(velocity: int):
     """
     Send a signed goal velocity to the XW540.
 
-    The reduction gear reverses the physical direction:
-      RETRACT -> positive motor velocity
-      DEPLOY  -> negative motor velocity
+    Physical winch direction:
+      RETRACT -> negative motor velocity
+      DEPLOY  -> positive motor velocity
     """
 
     global current_velocity
@@ -425,29 +425,30 @@ def execute_retract() -> dict:
     require_winch_ready()
 
     if direction == -1:
+        # Already retracting -> increase retract speed.
         if speed_level < len(SPEED_LEVELS) - 1:
             speed_level += 1
 
-        # Reversed by the reduction gear.
-        velocity = SPEED_LEVELS[speed_level]
+        velocity = -SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
     elif direction == 1:
+        # Currently deploying -> progressively reduce deploy speed.
         if speed_level > 0:
             speed_level -= 1
 
-            # Still physically deploying until speed reaches zero.
-            velocity = -SPEED_LEVELS[speed_level]
+            velocity = SPEED_LEVELS[speed_level]
             write_velocity(velocity)
+
         else:
             return execute_stop()
 
     else:
+        # Stopped -> begin retracting at speed level 1.
         direction = -1
         speed_level = 0
 
-        # Reversed by the reduction gear.
-        velocity = SPEED_LEVELS[speed_level]
+        velocity = -SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
     return get_motor_state()
@@ -462,29 +463,30 @@ def execute_deploy() -> dict:
     require_winch_ready()
 
     if direction == 1:
+        # Already deploying -> increase deploy speed.
         if speed_level < len(SPEED_LEVELS) - 1:
             speed_level += 1
 
-        # Reversed by the reduction gear.
-        velocity = -SPEED_LEVELS[speed_level]
+        velocity = SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
     elif direction == -1:
+        # Currently retracting -> progressively reduce retract speed.
         if speed_level > 0:
             speed_level -= 1
 
-            # Still physically retracting until speed reaches zero.
-            velocity = SPEED_LEVELS[speed_level]
+            velocity = -SPEED_LEVELS[speed_level]
             write_velocity(velocity)
+
         else:
             return execute_stop()
 
     else:
+        # Stopped -> begin deploying at speed level 1.
         direction = 1
         speed_level = 0
 
-        # Reversed by the reduction gear.
-        velocity = -SPEED_LEVELS[speed_level]
+        velocity = SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
     return get_motor_state()
