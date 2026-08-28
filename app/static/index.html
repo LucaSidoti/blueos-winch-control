@@ -1,24 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CTD Winch Control</title>
 
-
     <style>
-
         * {
             box-sizing: border-box;
         }
-
 
         body {
             margin: 0;
@@ -27,26 +17,23 @@
             color: #F8FAFC;
         }
 
-
         .container {
-            width: min(760px, 92vw);
+            width: min(780px, 92vw);
             margin: 0 auto;
             padding: 32px 0;
         }
 
-
         h1 {
             text-align: center;
-            margin-bottom: 4px;
+            margin: 0 0 4px;
+            letter-spacing: 0.02em;
         }
-
 
         .subtitle {
             text-align: center;
             color: #94A3B8;
             margin-bottom: 28px;
         }
-
 
         .panel {
             background: #1E293B;
@@ -55,7 +42,6 @@
             margin-bottom: 18px;
         }
 
-
         .connection-row {
             display: flex;
             justify-content: space-between;
@@ -63,35 +49,32 @@
             align-items: center;
         }
 
-
         .connected {
             color: #22C55E;
             font-weight: bold;
         }
-
 
         .disconnected {
             color: #EF4444;
             font-weight: bold;
         }
 
-
         .secondary {
             color: #94A3B8;
+            text-align: right;
+            line-height: 1.5;
         }
 
-
-        /* ====================================================
-           MOTOR SETUP
-           ==================================================== */
-
-        .setup-title {
+        .setup-title,
+        .status-small {
             color: #94A3B8;
             font-size: 13px;
             font-weight: bold;
-            margin-bottom: 14px;
         }
 
+        .setup-title {
+            margin-bottom: 14px;
+        }
 
         .setup-status {
             display: flex;
@@ -100,27 +83,30 @@
             margin-bottom: 18px;
         }
 
-
         .status-item {
             font-size: 14px;
             font-weight: bold;
         }
 
-
         .state-on {
             color: #22C55E;
         }
-
 
         .state-off {
             color: #94A3B8;
         }
 
-
-        .state-torque-off {
+        .state-warning {
             color: #F59E0B;
         }
 
+        .state-locked {
+            color: #EF4444;
+        }
+
+        .state-unlocking {
+            color: #3B82F6;
+        }
 
         .setup-controls {
             display: grid;
@@ -128,44 +114,44 @@
             gap: 10px;
         }
 
-
         .setup-button {
             min-height: 52px;
             font-size: 14px;
-            background: #475569;
         }
-
 
         .initialize-button {
             background: #475569;
         }
 
-
         .torque-enable-button {
             background: #16A34A;
         }
-
 
         .torque-disable-button {
             background: #F59E0B;
         }
 
+        .lock-toggle-button {
+            grid-column: 1 / -1;
+            min-height: 52px;
+            font-size: 15px;
+        }
 
-        /* ====================================================
-           WINCH STATUS
-           ==================================================== */
+        .unlock-action {
+            background: #16A34A;
+        }
+
+        .lock-action {
+            background: #EF4444;
+        }
+
+        .busy-action {
+            background: #475569;
+        }
 
         .status-panel {
             text-align: center;
         }
-
-
-        .status-small {
-            color: #94A3B8;
-            font-size: 13px;
-            font-weight: bold;
-        }
-
 
         #status {
             font-size: 40px;
@@ -173,11 +159,9 @@
             margin: 8px 0 4px;
         }
 
-
         #direction-text {
             color: #94A3B8;
         }
-
 
         #rpm {
             font-size: 22px;
@@ -185,12 +169,10 @@
             margin-top: 12px;
         }
 
-
         #speed-text {
             margin-top: 8px;
             color: #94A3B8;
         }
-
 
         .speed-indicator {
             display: flex;
@@ -198,7 +180,6 @@
             gap: 8px;
             margin-top: 18px;
         }
-
 
         .speed-block {
             width: 52px;
@@ -210,17 +191,11 @@
             font-weight: bold;
         }
 
-
-        /* ====================================================
-           WINCH CONTROLS
-           ==================================================== */
-
         .controls {
             display: grid;
             grid-template-columns: 1fr 0.8fr 1fr;
             gap: 14px;
         }
-
 
         button {
             border: none;
@@ -228,54 +203,40 @@
             color: white;
             font-weight: bold;
             cursor: pointer;
-            transition:
-                opacity 0.15s,
-                transform 0.05s;
+            transition: opacity 0.15s, transform 0.05s;
         }
-
 
         button:active:not(:disabled) {
             transform: scale(0.98);
         }
-
 
         button:disabled {
             cursor: not-allowed;
             opacity: 0.35;
         }
 
-
         .motion-button {
             min-height: 125px;
             font-size: 17px;
         }
 
-
         .retract {
             background: #22C55E;
         }
-
 
         .stop {
             background: #EF4444;
         }
 
-
         .deploy {
             background: #3B82F6;
         }
-
 
         .button-symbol {
             display: block;
             font-size: 34px;
             margin-bottom: 12px;
         }
-
-
-        /* ====================================================
-           FOOTER / ERRORS
-           ==================================================== */
 
         .footer {
             text-align: center;
@@ -285,7 +246,6 @@
             line-height: 1.8;
         }
 
-
         .error {
             margin-top: 16px;
             color: #FCA5A5;
@@ -293,113 +253,71 @@
             min-height: 20px;
         }
 
-
         @media (max-width: 620px) {
-
-            .controls {
-                grid-template-columns: 1fr;
-            }
-
-
+            .controls,
             .setup-controls {
                 grid-template-columns: 1fr;
             }
 
+            .lock-toggle-button {
+                grid-column: auto;
+            }
 
             .motion-button {
                 min-height: 95px;
             }
-
 
             .connection-row {
                 flex-direction: column;
                 align-items: flex-start;
             }
 
+            .secondary {
+                text-align: left;
+            }
         }
-
     </style>
-
 </head>
 
-
 <body>
-
 <div class="container">
 
-
-    <!-- ======================================================
-         HEADER
-         ====================================================== -->
-
-    <h1>
-        CTD WINCH CONTROL
-    </h1>
-
-
+    <h1>CTD WINCH CONTROL</h1>
     <div class="subtitle">
-        BlueBoat • Dynamixel XW540-T140-R
+        BlueBoat • CTD Deployment System
     </div>
 
-
-    <!-- ======================================================
-         CONNECTION
-         ====================================================== -->
-
     <div class="panel">
-
         <div class="connection-row">
-
-            <div
-                id="connection"
-                class="disconnected"
-            >
+            <div id="connection" class="disconnected">
                 ● DISCONNECTED
             </div>
 
-
             <div class="secondary">
-                Motor ID 7 • /dev/ttyUSB0 • 1 Mbps
+                Winch: ID 7 • 1 Mbps<br>
+                Lock: ID 0 • 115.2 kbps
             </div>
-
         </div>
-
     </div>
 
-
-    <!-- ======================================================
-         MOTOR SETUP
-         ====================================================== -->
-
     <div class="panel">
-
-        <div class="setup-title">
-            MOTOR SETUP
-        </div>
-
+        <div class="setup-title">SYSTEM SETUP</div>
 
         <div class="setup-status">
-
-            <div
-                id="initialized-state"
-                class="status-item state-off"
-            >
+            <div id="initialized-state" class="status-item state-off">
                 ● NOT INITIALIZED
             </div>
 
-
-            <div
-                id="torque-state"
-                class="status-item state-torque-off"
-            >
+            <div id="torque-state" class="status-item state-warning">
                 ● TORQUE DISABLED
             </div>
 
+            <div id="lock-state" class="status-item state-locked">
+                ● LOCKED
+            </div>
         </div>
 
-
         <div class="setup-controls">
-
             <button
                 id="initialize-button"
                 class="setup-button initialize-button"
@@ -407,7 +325,6 @@
             >
                 INITIALIZE
             </button>
-
 
             <button
                 id="torque-enable-button"
@@ -418,7 +335,6 @@
                 ENABLE TORQUE
             </button>
 
-
             <button
                 id="torque-disable-button"
                 class="setup-button torque-disable-button"
@@ -428,74 +344,44 @@
                 DISABLE TORQUE
             </button>
 
+            <button
+                id="lock-toggle-button"
+                class="lock-toggle-button unlock-action"
+                onclick="toggleLock()"
+                disabled
+            >
+                UNLOCK
+            </button>
         </div>
-
     </div>
 
-
-    <!-- ======================================================
-         WINCH STATUS
-         ====================================================== -->
-
     <div class="panel status-panel">
+        <div class="status-small">WINCH STATUS</div>
 
-        <div class="status-small">
-            WINCH STATUS
-        </div>
-
-
-        <div id="status">
-            STOPPED
-        </div>
-
-
-        <div id="direction-text">
-            Cable stationary
-        </div>
-
-
-        <div id="rpm">
-            0.0 RPM
-        </div>
-
-
-        <div id="speed-text">
-            Speed level: 0 / 5
-        </div>
-
+        <div id="status">STOPPED</div>
+        <div id="direction-text">Cable stationary</div>
+        <div id="rpm">0.0 RPM</div>
+        <div id="speed-text">Speed level: 0 / 5</div>
 
         <div class="speed-indicator">
-
             <div class="speed-block">1</div>
             <div class="speed-block">2</div>
             <div class="speed-block">3</div>
             <div class="speed-block">4</div>
             <div class="speed-block">5</div>
-
         </div>
-
     </div>
 
-
-    <!-- ======================================================
-         MOTION CONTROLS
-         ====================================================== -->
-
     <div class="controls">
-
         <button
             id="retract-button"
             class="motion-button retract"
             onclick="sendMotionCommand('retract')"
             disabled
         >
-            <span class="button-symbol">
-                ▲
-            </span>
-
+            <span class="button-symbol">▲</span>
             RETRACT / FASTER
         </button>
-
 
         <button
             id="stop-button"
@@ -503,13 +389,9 @@
             onclick="sendMotionCommand('stop')"
             disabled
         >
-            <span class="button-symbol">
-                ■
-            </span>
-
+            <span class="button-symbol">■</span>
             STOP
         </button>
-
 
         <button
             id="deploy-button"
@@ -517,733 +399,388 @@
             onclick="sendMotionCommand('deploy')"
             disabled
         >
-            <span class="button-symbol">
-                ▼
-            </span>
-
+            <span class="button-symbol">▼</span>
             DEPLOY / FASTER
         </button>
-
     </div>
 
-
-    <div
-        id="error"
-        class="error"
-    ></div>
-
+    <div id="error" class="error"></div>
 
     <div class="footer">
-
         ↑ Retract / faster
-
         &nbsp;&nbsp;
-
         ↓ Deploy / faster
-
         &nbsp;&nbsp;
-
         SPACE Stop
-
         <br>
-
-        Speed range: 4.6 – 22.9 RPM
-
+        Unlock the mechanical lock before moving the winch
     </div>
-
-
 </div>
 
-
 <script>
+    const speedBlocks = document.querySelectorAll(".speed-block");
 
-    // ========================================================
-    // ELEMENTS
-    // ========================================================
+    const connectionElement = document.getElementById("connection");
+    const initializedElement = document.getElementById("initialized-state");
+    const torqueElement = document.getElementById("torque-state");
+    const lockElement = document.getElementById("lock-state");
 
-    const speedBlocks =
-        document.querySelectorAll(".speed-block");
+    const initializeButton = document.getElementById("initialize-button");
+    const torqueEnableButton = document.getElementById("torque-enable-button");
+    const torqueDisableButton = document.getElementById("torque-disable-button");
+    const lockToggleButton = document.getElementById("lock-toggle-button");
 
-
-    const connectionElement =
-        document.getElementById("connection");
-
-
-    const initializedElement =
-        document.getElementById("initialized-state");
-
-
-    const torqueElement =
-        document.getElementById("torque-state");
-
-
-    const initializeButton =
-        document.getElementById("initialize-button");
-
-
-    const torqueEnableButton =
-        document.getElementById("torque-enable-button");
-
-
-    const torqueDisableButton =
-        document.getElementById("torque-disable-button");
-
-
-    const retractButton =
-        document.getElementById("retract-button");
-
-
-    const stopButton =
-        document.getElementById("stop-button");
-
-
-    const deployButton =
-        document.getElementById("deploy-button");
-
-
-    const errorElement =
-        document.getElementById("error");
-
+    const retractButton = document.getElementById("retract-button");
+    const stopButton = document.getElementById("stop-button");
+    const deployButton = document.getElementById("deploy-button");
+    const errorElement = document.getElementById("error");
 
     let motorConnected = false;
     let motorInitialized = false;
     let motorTorqueEnabled = false;
+    let mechanicalLockState = "locked";
 
-
-    // ========================================================
-    // API
-    // ========================================================
 
     async function apiRequest(path, method = "GET") {
-
-        const response = await fetch(
-            path,
-            {
-                method: method
-            }
-        );
-
+        const response = await fetch(path, { method });
 
         if (!response.ok) {
-
-            throw new Error(
-                `HTTP ${response.status}`
-            );
-
+            throw new Error(`HTTP ${response.status}`);
         }
 
-
         return await response.json();
-
     }
 
 
-    // ========================================================
-    // ERROR DISPLAY
-    // ========================================================
-
     function clearError() {
-
         errorElement.textContent = "";
-
     }
 
 
     function showError(message) {
-
         errorElement.textContent = message;
-
     }
 
 
-    // ========================================================
-    // SETUP STATE
-    // ========================================================
-
     function updateSetupState() {
-
         if (motorInitialized) {
-
-            initializedElement.textContent =
-                "● INITIALIZED";
-
-            initializedElement.className =
-                "status-item state-on";
-
+            initializedElement.textContent = "● INITIALIZED";
+            initializedElement.className = "status-item state-on";
         } else {
-
-            initializedElement.textContent =
-                "● NOT INITIALIZED";
-
-            initializedElement.className =
-                "status-item state-off";
-
+            initializedElement.textContent = "● NOT INITIALIZED";
+            initializedElement.className = "status-item state-off";
         }
-
 
         if (motorTorqueEnabled) {
-
-            torqueElement.textContent =
-                "● TORQUE ENABLED";
-
-            torqueElement.className =
-                "status-item state-on";
-
+            torqueElement.textContent = "● TORQUE ENABLED";
+            torqueElement.className = "status-item state-on";
         } else {
-
-            torqueElement.textContent =
-                "● TORQUE DISABLED";
-
-            torqueElement.className =
-                "status-item state-torque-off";
-
+            torqueElement.textContent = "● TORQUE DISABLED";
+            torqueElement.className = "status-item state-warning";
         }
 
+        if (mechanicalLockState === "unlocked") {
+            lockElement.textContent = "● UNLOCKED";
+            lockElement.className = "status-item state-on";
+
+            lockToggleButton.textContent = "LOCK";
+            lockToggleButton.className = "lock-toggle-button lock-action";
+        }
+        else if (mechanicalLockState === "unlocking") {
+            lockElement.textContent = "● UNLOCKING";
+            lockElement.className = "status-item state-unlocking";
+
+            lockToggleButton.textContent = "UNLOCKING...";
+            lockToggleButton.className = "lock-toggle-button busy-action";
+        }
+        else {
+            lockElement.textContent = "● LOCKED";
+            lockElement.className = "status-item state-locked";
+
+            lockToggleButton.textContent = "UNLOCK";
+            lockToggleButton.className = "lock-toggle-button unlock-action";
+        }
 
         initializeButton.disabled =
             !motorConnected || motorTorqueEnabled;
-
 
         torqueEnableButton.disabled =
             !motorConnected ||
             !motorInitialized ||
             motorTorqueEnabled;
 
-
         torqueDisableButton.disabled =
             !motorConnected ||
             !motorTorqueEnabled;
 
+        lockToggleButton.disabled =
+            !motorConnected ||
+            !motorInitialized ||
+            mechanicalLockState === "unlocking";
 
         const motionEnabled =
             motorConnected &&
             motorInitialized &&
-            motorTorqueEnabled;
+            motorTorqueEnabled &&
+            mechanicalLockState === "unlocked";
 
-
-        retractButton.disabled =
-            !motionEnabled;
-
-
-        deployButton.disabled =
-            !motionEnabled;
-
-
-        /*
-         * STOP remains available whenever the motor
-         * is connected and initialized.
-         */
+        retractButton.disabled = !motionEnabled;
+        deployButton.disabled = !motionEnabled;
 
         stopButton.disabled =
             !motorConnected ||
             !motorInitialized;
-
     }
 
 
-    // ========================================================
-    // WINCH STATE
-    // ========================================================
-
     function updateMotionState(data) {
-
-        const status =
-            document.getElementById("status");
-
-
-        const directionText =
-            document.getElementById("direction-text");
-
-
-        const rpm =
-            document.getElementById("rpm");
-
-
-        const speedText =
-            document.getElementById("speed-text");
-
+        const status = document.getElementById("status");
+        const directionText = document.getElementById("direction-text");
+        const rpm = document.getElementById("rpm");
+        const speedText = document.getElementById("speed-text");
 
         speedBlocks.forEach(block => {
-
-            block.style.background =
-                "#334155";
-
-            block.style.color =
-                "#94A3B8";
-
+            block.style.background = "#334155";
+            block.style.color = "#94A3B8";
         });
 
-
         if (data.status === "retracting") {
-
-            status.textContent =
-                "RETRACTING";
-
-            status.style.color =
-                "#22C55E";
-
-            directionText.textContent =
-                "Cable moving up";
-
+            status.textContent = "RETRACTING";
+            status.style.color = "#22C55E";
+            directionText.textContent = "Cable moving up";
         }
-
         else if (data.status === "deploying") {
-
-            status.textContent =
-                "DEPLOYING";
-
-            status.style.color =
-                "#3B82F6";
-
-            directionText.textContent =
-                "Cable moving down";
-
+            status.textContent = "DEPLOYING";
+            status.style.color = "#3B82F6";
+            directionText.textContent = "Cable moving down";
         }
-
         else {
-
-            status.textContent =
-                "STOPPED";
-
-            status.style.color =
-                "#EF4444";
-
-            directionText.textContent =
-                "Cable stationary";
-
+            status.textContent = "STOPPED";
+            status.style.color = "#EF4444";
+            directionText.textContent = "Cable stationary";
         }
 
-
-        rpm.textContent =
-            `${data.rpm.toFixed(1)} RPM`;
-
-
+        rpm.textContent = `${data.rpm.toFixed(1)} RPM`;
         speedText.textContent =
             `Speed level: ${data.speed_level} / ${data.max_speed_level}`;
 
-
-        for (
-            let i = 0;
-            i < data.speed_level;
-            i++
-        ) {
-
+        for (let i = 0; i < data.speed_level; i++) {
             if (data.status === "retracting") {
-
-                speedBlocks[i].style.background =
-                    "#22C55E";
-
+                speedBlocks[i].style.background = "#22C55E";
             }
-
             else if (data.status === "deploying") {
-
-                speedBlocks[i].style.background =
-                    "#3B82F6";
-
+                speedBlocks[i].style.background = "#3B82F6";
             }
 
-
-            speedBlocks[i].style.color =
-                "#F8FAFC";
-
+            speedBlocks[i].style.color = "#F8FAFC";
         }
-
     }
 
 
-    // ========================================================
-    // CONNECTION
-    // ========================================================
-
-    async function checkConnection() {
-
-        try {
-
-            const data =
-                await apiRequest("/motor/ping");
-
-
-            motorConnected =
-                data.connected === true;
-
-
-            if (motorConnected) {
-
-                connectionElement.textContent =
-                    "● CONNECTED";
-
-                connectionElement.className =
-                    "connected";
-
-            } else {
-
-                connectionElement.textContent =
-                    "● DISCONNECTED";
-
-                connectionElement.className =
-                    "disconnected";
-
-            }
-
+    function applyState(data) {
+        if (!data || data.success !== true) {
+            return;
         }
 
-        catch (error) {
-
-            motorConnected = false;
-
-            connectionElement.textContent =
-                "● DISCONNECTED";
-
-            connectionElement.className =
-                "disconnected";
-
-        }
-
+        motorInitialized = data.initialized === true;
+        motorTorqueEnabled = data.torque_enabled === true;
+        mechanicalLockState = data.lock_state || "locked";
 
         updateSetupState();
-
+        updateMotionState(data);
     }
 
 
-    // ========================================================
-    // REFRESH STATE
-    // ========================================================
+    async function checkConnection() {
+        try {
+            const data = await apiRequest("/motor/ping");
+            motorConnected = data.connected === true;
+
+            if (motorConnected) {
+                connectionElement.textContent = "● CONNECTED";
+                connectionElement.className = "connected";
+            } else {
+                connectionElement.textContent = "● DISCONNECTED";
+                connectionElement.className = "disconnected";
+            }
+        }
+        catch (error) {
+            motorConnected = false;
+            connectionElement.textContent = "● DISCONNECTED";
+            connectionElement.className = "disconnected";
+        }
+
+        updateSetupState();
+    }
+
 
     async function refreshState() {
-
         try {
-
-            const data =
-                await apiRequest("/motor/state");
-
-
-            if (!data.success) {
-                return;
-            }
-
-
-            motorInitialized =
-                data.initialized === true;
-
-
-            motorTorqueEnabled =
-                data.torque_enabled === true;
-
-
-            updateSetupState();
-
-            updateMotionState(data);
-
+            const data = await apiRequest("/motor/state");
+            applyState(data);
         }
-
         catch (error) {
-
-            showError(
-                `State error: ${error.message}`
-            );
-
+            showError(`State error: ${error.message}`);
         }
-
     }
 
-
-    // ========================================================
-    // INITIALIZE MOTOR
-    // ========================================================
 
     async function initializeMotor() {
-
         clearError();
 
-
         try {
-
-            const data =
-                await apiRequest(
-                    "/motor/initialize",
-                    "POST"
-                );
-
-
-            if (!data.success) {
-
-                throw new Error(
-                    data.error ||
-                    "Initialization failed"
-                );
-
-            }
-
-
-            motorInitialized = true;
-            motorTorqueEnabled = false;
-
-
-            updateSetupState();
-
-            await refreshState();
-
-        }
-
-        catch (error) {
-
-            showError(
-                `Initialization error: ${error.message}`
+            const data = await apiRequest(
+                "/motor/initialize",
+                "POST"
             );
 
-        }
+            if (!data.success) {
+                throw new Error(
+                    data.error || "Initialization failed"
+                );
+            }
 
+            applyState(data);
+        }
+        catch (error) {
+            showError(`Initialization error: ${error.message}`);
+        }
     }
 
-
-    // ========================================================
-    // ENABLE TORQUE
-    // ========================================================
 
     async function enableTorque() {
-
         clearError();
 
-
         try {
-
-            const data =
-                await apiRequest(
-                    "/motor/torque/enable",
-                    "POST"
-                );
-
-
-            if (!data.success) {
-
-                throw new Error(
-                    data.error ||
-                    "Could not enable torque"
-                );
-
-            }
-
-
-            motorTorqueEnabled = true;
-
-
-            updateSetupState();
-
-            await refreshState();
-
-        }
-
-        catch (error) {
-
-            showError(
-                `Torque error: ${error.message}`
+            const data = await apiRequest(
+                "/motor/torque/enable",
+                "POST"
             );
 
-        }
+            if (!data.success) {
+                throw new Error(
+                    data.error || "Could not enable torque"
+                );
+            }
 
+            applyState(data);
+        }
+        catch (error) {
+            showError(`Torque error: ${error.message}`);
+        }
     }
 
-
-    // ========================================================
-    // DISABLE TORQUE
-    // ========================================================
 
     async function disableTorque() {
-
         clearError();
 
-
         try {
-
-            /*
-             * Backend always commands zero velocity
-             * before disabling torque.
-             */
-
-            const data =
-                await apiRequest(
-                    "/motor/torque/disable",
-                    "POST"
-                );
-
-
-            if (!data.success) {
-
-                throw new Error(
-                    data.error ||
-                    "Could not disable torque"
-                );
-
-            }
-
-
-            motorTorqueEnabled = false;
-
-
-            updateSetupState();
-
-            await refreshState();
-
-        }
-
-        catch (error) {
-
-            showError(
-                `Torque error: ${error.message}`
+            const data = await apiRequest(
+                "/motor/torque/disable",
+                "POST"
             );
 
-        }
+            if (!data.success) {
+                throw new Error(
+                    data.error || "Could not disable torque"
+                );
+            }
 
+            applyState(data);
+        }
+        catch (error) {
+            showError(`Torque error: ${error.message}`);
+        }
     }
 
 
-    // ========================================================
-    // MOTION COMMAND
-    // ========================================================
+    async function toggleLock() {
+        clearError();
+
+        try {
+            lockToggleButton.disabled = true;
+
+            const data = await apiRequest(
+                "/lock/toggle",
+                "POST"
+            );
+
+            if (!data.success) {
+                throw new Error(
+                    data.error || "Lock command failed"
+                );
+            }
+
+            applyState(data);
+        }
+        catch (error) {
+            showError(`Lock error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
 
     async function sendMotionCommand(command) {
-
         clearError();
 
-
         try {
-
-            const data =
-                await apiRequest(
-                    `/motor/${command}`,
-                    "POST"
-                );
-
-
-            if (!data.success) {
-
-                throw new Error(
-                    data.error ||
-                    "Command failed"
-                );
-
-            }
-
-
-            updateMotionState(data);
-
-        }
-
-        catch (error) {
-
-            showError(
-                `Command error: ${error.message}`
+            const data = await apiRequest(
+                `/motor/${command}`,
+                "POST"
             );
 
-        }
+            if (!data.success) {
+                throw new Error(
+                    data.error || "Command failed"
+                );
+            }
 
+            applyState(data);
+        }
+        catch (error) {
+            showError(`Command error: ${error.message}`);
+        }
     }
 
 
-    // ========================================================
-    // KEYBOARD CONTROLS
-    // ========================================================
-
-    document.addEventListener(
-        "keydown",
-        event => {
-
-            /*
-             * Ignore keyboard auto-repeat.
-             *
-             * One physical key press =
-             * one speed-level change.
-             */
-
-            if (event.repeat) {
-                return;
-            }
-
-
-            if (event.key === "ArrowUp") {
-
-                event.preventDefault();
-
-                if (!retractButton.disabled) {
-
-                    sendMotionCommand(
-                        "retract"
-                    );
-
-                }
-
-            }
-
-            else if (event.key === "ArrowDown") {
-
-                event.preventDefault();
-
-                if (!deployButton.disabled) {
-
-                    sendMotionCommand(
-                        "deploy"
-                    );
-
-                }
-
-            }
-
-            else if (event.code === "Space") {
-
-                event.preventDefault();
-
-                if (!stopButton.disabled) {
-
-                    sendMotionCommand(
-                        "stop"
-                    );
-
-                }
-
-            }
-
+    document.addEventListener("keydown", event => {
+        if (event.repeat) {
+            return;
         }
-    );
 
+        if (event.key === "ArrowUp") {
+            event.preventDefault();
 
-    // ========================================================
-    // START INTERFACE
-    // ========================================================
+            if (!retractButton.disabled) {
+                sendMotionCommand("retract");
+            }
+        }
+        else if (event.key === "ArrowDown") {
+            event.preventDefault();
+
+            if (!deployButton.disabled) {
+                sendMotionCommand("deploy");
+            }
+        }
+        else if (event.code === "Space") {
+            event.preventDefault();
+
+            if (!stopButton.disabled) {
+                sendMotionCommand("stop");
+            }
+        }
+    });
+
 
     async function initializeInterface() {
-
         await checkConnection();
-
         await refreshState();
-
     }
-
 
     initializeInterface();
 
-
-    /*
-     * Update displayed state once per second.
-     */
-
-    setInterval(
-        refreshState,
-        1000
-    );
-
-
-    /*
-     * Ping the motor every three seconds.
-     */
-
-    setInterval(
-        checkConnection,
-        3000
-    );
-
+    setInterval(refreshState, 1000);
+    setInterval(checkConnection, 3000);
 </script>
-
-
 </body>
-
 </html>
