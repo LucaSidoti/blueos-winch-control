@@ -34,6 +34,7 @@ ADDR_OPERATING_MODE = 11
 ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_VELOCITY = 104
 ADDR_PROFILE_ACCELERATION = 108
+ADDR_PRESENT_POSITION = 132
 
 TORQUE_ENABLE = 1
 TORQUE_DISABLE = 0
@@ -67,6 +68,18 @@ UNLOCK_POSITION_RAW = round(
 LOCK_PROFILE_ACCELERATION = 5
 LOCK_PROFILE_VELOCITY = 20
 LOCK_COMMAND_DELAY = 0.3
+
+# Ratchet/pawl load-relief movement before unlocking.
+# The ratchet has 24 teeth -> 15 degrees per tooth.
+# With a 2:1 reduction, 8 motor degrees = 4 ratchet degrees.
+WINCH_COUNTS_PER_REV = 4096
+UNLOCK_RELIEF_MOTOR_DEG = 8.0
+UNLOCK_RELIEF_COUNTS = round(
+    WINCH_COUNTS_PER_REV * UNLOCK_RELIEF_MOTOR_DEG / 360.0
+)
+UNLOCK_RELIEF_VELOCITY = 20
+UNLOCK_RELIEF_TIMEOUT = 1.0
+UNLOCK_RELIEF_POLL_INTERVAL = 0.02
 
 
 # ============================================================
@@ -231,6 +244,118 @@ def require_winch_ready():
 
 
 # ============================================================
+# RATCHET LOAD RELIEF
+# ============================================================
+
+def relieve_pawl_load():
+    """
+    Rotate the XW540 slightly in the RETRACT direction before
+    lifting the pawl.
+
+    The winch must already have torque enabled. The movement is
+    measured from the XW540 Present Position register so it does
+    not depend on a fixed sleep duration.
+    """
+
+    global current_velocity
+
+    if not initialized:
+        raise RuntimeError("Initialize the system first")
+
+    if not torque_enabled:
+        raise RuntimeError(
+            "Enable winch torque before unlocking the mechanism"
+        )
+
+    # Extra safety: ensure the winch is stationary before the relief move.
+    write_velocity(0)
+
+    with bus_lock:
+        port = open_bus()
+        packet = PacketHandler(PROTOCOL_VERSION)
+        motion_started = False
+
+        try:
+            set_bus_baudrate(port, WINCH_BAUDRATE)
+
+            start_position, comm_result, dxl_error = packet.read4ByteTxRx(
+                port,
+                WINCH_ID,
+                ADDR_PRESENT_POSITION,
+            )
+            check_result(
+                packet,
+                comm_result,
+                dxl_error,
+                "Read winch start position",
+            )
+
+            # RETRACT is positive motor velocity for this gearbox.
+            command = UNLOCK_RELIEF_VELOCITY & 0xFFFFFFFF
+            comm_result, dxl_error = packet.write4ByteTxRx(
+                port,
+                WINCH_ID,
+                ADDR_GOAL_VELOCITY,
+                command,
+            )
+            check_result(
+                packet,
+                comm_result,
+                dxl_error,
+                "Start ratchet load-relief movement",
+            )
+
+            motion_started = True
+            current_velocity = UNLOCK_RELIEF_VELOCITY
+            deadline = time.monotonic() + UNLOCK_RELIEF_TIMEOUT
+
+            while True:
+                position, comm_result, dxl_error = packet.read4ByteTxRx(
+                    port,
+                    WINCH_ID,
+                    ADDR_PRESENT_POSITION,
+                )
+                check_result(
+                    packet,
+                    comm_result,
+                    dxl_error,
+                    "Read winch relief position",
+                )
+
+                movement = (position - start_position) & 0xFFFFFFFF
+
+                if movement >= UNLOCK_RELIEF_COUNTS:
+                    break
+
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Ratchet load-relief movement timed out"
+                    )
+
+                time.sleep(UNLOCK_RELIEF_POLL_INTERVAL)
+
+        finally:
+            if motion_started:
+                try:
+                    comm_result, dxl_error = packet.write4ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_GOAL_VELOCITY,
+                        0,
+                    )
+                    check_result(
+                        packet,
+                        comm_result,
+                        dxl_error,
+                        "Stop ratchet load-relief movement",
+                    )
+                finally:
+                    current_velocity = 0
+
+            port.closePort()
+
+
+# ============================================================
 # LOCK MOTOR HELPERS
 # ============================================================
 
@@ -302,12 +427,25 @@ def initialize_lock_motor(port, packet):
 
 
 def unlock_mechanism():
-    """Enable XW430 torque and command the 205 degree unlock position."""
+    """
+    Unload the pawl, then command the XW430 to the unlock position.
+
+    The XW540 torque must be enabled first. The ratchet is moved
+    approximately 4 degrees at the ratchet (8 degrees at the motor)
+    in the RETRACT direction before the pawl is lifted.
+    """
 
     global lock_state
 
     if not initialized:
         raise RuntimeError("Initialize the system first")
+
+    if not torque_enabled:
+        raise RuntimeError(
+            "Enable winch torque before unlocking the mechanism"
+        )
+
+    relieve_pawl_load()
 
     lock_state = "unlocking"
 
@@ -348,8 +486,6 @@ def unlock_mechanism():
             finally:
                 port.closePort()
 
-        # No strict encoder check: the mechanism does not necessarily
-        # settle at an exact absolute angle under spring/load effects.
         time.sleep(LOCK_COMMAND_DELAY)
         lock_state = "unlocked"
 
