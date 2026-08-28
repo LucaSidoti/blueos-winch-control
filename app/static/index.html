@@ -413,7 +413,7 @@
         &nbsp;&nbsp;
         SPACE Stop
         <br>
-        Unlock the mechanical lock before moving the winch
+        Enable torque before unlocking • Locking always stops the winch first
     </div>
 </div>
 
@@ -513,10 +513,18 @@
             !motorConnected ||
             !motorTorqueEnabled;
 
+        // LOCK is available once initialized.
+        // UNLOCK requires winch torque so the ratchet load can be
+        // relieved before the pawl is lifted.
+        const unlockingRequiresTorque =
+            mechanicalLockState === "locked" &&
+            !motorTorqueEnabled;
+
         lockToggleButton.disabled =
             !motorConnected ||
             !motorInitialized ||
-            mechanicalLockState === "unlocking";
+            mechanicalLockState === "unlocking" ||
+            unlockingRequiresTorque;
 
         const motionEnabled =
             motorConnected &&
