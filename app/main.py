@@ -35,6 +35,12 @@ ADDR_TORQUE_ENABLE = 64
 ADDR_GOAL_VELOCITY = 104
 ADDR_PROFILE_ACCELERATION = 108
 
+ADDR_PRESENT_CURRENT = 126
+ADDR_PRESENT_VELOCITY = 128
+ADDR_PRESENT_POSITION = 132
+ADDR_PRESENT_INPUT_VOLTAGE = 144
+ADDR_PRESENT_TEMPERATURE = 146
+
 TORQUE_ENABLE = 1
 TORQUE_DISABLE = 0
 VELOCITY_MODE = 1
@@ -42,6 +48,11 @@ VELOCITY_MODE = 1
 WINCH_PROFILE_ACCELERATION = 1
 DYNAMIXEL_RPM_PER_UNIT = 0.229
 SPEED_LEVELS = [20, 40, 60, 80, 100]
+
+PRESENT_CURRENT_MA_PER_UNIT = 2.69
+PRESENT_VELOCITY_RPM_PER_UNIT = 0.229
+PRESENT_VOLTAGE_V_PER_UNIT = 0.1
+POSITION_DEG_PER_COUNT = 360.0 / 4096.0
 
 
 # ============================================================
@@ -66,7 +77,32 @@ UNLOCK_POSITION_RAW = round(
 
 LOCK_PROFILE_ACCELERATION = 5
 LOCK_PROFILE_VELOCITY = 20
-LOCK_COMMAND_DELAY = 0.3
+
+# Minimum time to let the pawl begin lifting before checking position.
+LOCK_COMMAND_DELAY = 0.6
+
+# Unlock confirmation settings.
+UNLOCK_POSITION_TOLERANCE_DEG = 12.0
+UNLOCK_VERIFY_TIMEOUT = 1.5
+UNLOCK_VERIFY_POLL_INTERVAL = 0.05
+
+
+# ============================================================
+# RATCHET / PAWL LOAD RELIEF
+# ============================================================
+
+# The ratchet has 24 teeth -> 15 degrees per ratchet tooth.
+# With the 2:1 reduction, 6 motor degrees = 3 ratchet degrees.
+WINCH_COUNTS_PER_REV = 4096
+UNLOCK_RELIEF_MOTOR_DEG = 6.0
+UNLOCK_RELIEF_COUNTS = round(
+    WINCH_COUNTS_PER_REV * UNLOCK_RELIEF_MOTOR_DEG / 360.0
+)
+
+UNLOCK_RELIEF_VELOCITY = 20
+UNLOCK_RELIEF_TIMEOUT = 1.0
+UNLOCK_RELIEF_POLL_INTERVAL = 0.02
+UNLOCK_RELIEF_SETTLE_DELAY = 0.2
 
 
 # ============================================================
@@ -98,6 +134,12 @@ current_velocity = 0
 initialized = False
 torque_enabled = False
 lock_state = "locked"
+
+# Last unlock diagnostic values.
+last_unlock_lock_position_deg = None
+last_unlock_lock_current_a = None
+last_unlock_position_error_deg = None
+last_unlock_success = None
 
 bus_lock = Lock()
 
@@ -137,12 +179,133 @@ def check_result(packet, comm_result, dxl_error, action):
 def set_bus_baudrate(port, baudrate):
     """Switch the U2D2 baud rate for the motor being addressed."""
 
-    # Each backend operation opens a fresh PortHandler, so always
-    # configure the requested baud rate explicitly.
     if not port.setBaudRate(baudrate):
         raise RuntimeError(
             f"Could not set bus baud rate to {baudrate}"
         )
+
+
+def signed_16(value):
+    return value - 0x10000 if value & 0x8000 else value
+
+
+def signed_32(value):
+    return value - 0x100000000 if value & 0x80000000 else value
+
+
+# ============================================================
+# TELEMETRY HELPERS
+# ============================================================
+
+def read_motor_telemetry(port, packet, motor_id, baudrate):
+    """Read current, speed, position, voltage and temperature."""
+
+    set_bus_baudrate(port, baudrate)
+
+    raw_current, comm_result, dxl_error = packet.read2ByteTxRx(
+        port, motor_id, ADDR_PRESENT_CURRENT
+    )
+    check_result(
+        packet,
+        comm_result,
+        dxl_error,
+        f"Read motor {motor_id} current",
+    )
+
+    raw_velocity, comm_result, dxl_error = packet.read4ByteTxRx(
+        port, motor_id, ADDR_PRESENT_VELOCITY
+    )
+    check_result(
+        packet,
+        comm_result,
+        dxl_error,
+        f"Read motor {motor_id} velocity",
+    )
+
+    raw_position, comm_result, dxl_error = packet.read4ByteTxRx(
+        port, motor_id, ADDR_PRESENT_POSITION
+    )
+    check_result(
+        packet,
+        comm_result,
+        dxl_error,
+        f"Read motor {motor_id} position",
+    )
+
+    raw_voltage, comm_result, dxl_error = packet.read2ByteTxRx(
+        port, motor_id, ADDR_PRESENT_INPUT_VOLTAGE
+    )
+    check_result(
+        packet,
+        comm_result,
+        dxl_error,
+        f"Read motor {motor_id} voltage",
+    )
+
+    raw_temperature, comm_result, dxl_error = packet.read1ByteTxRx(
+        port, motor_id, ADDR_PRESENT_TEMPERATURE
+    )
+    check_result(
+        packet,
+        comm_result,
+        dxl_error,
+        f"Read motor {motor_id} temperature",
+    )
+
+    return {
+        "current_a": round(
+            signed_16(raw_current)
+            * PRESENT_CURRENT_MA_PER_UNIT
+            / 1000.0,
+            3,
+        ),
+        "rpm": round(
+            signed_32(raw_velocity)
+            * PRESENT_VELOCITY_RPM_PER_UNIT,
+            2,
+        ),
+        "position_deg": round(
+            signed_32(raw_position)
+            * POSITION_DEG_PER_COUNT,
+            1,
+        ),
+        "voltage_v": round(
+            raw_voltage
+            * PRESENT_VOLTAGE_V_PER_UNIT,
+            1,
+        ),
+        "temperature_c": int(raw_temperature),
+    }
+
+
+def read_all_telemetry():
+    """Read telemetry from both Dynamixels."""
+
+    with bus_lock:
+        port = open_bus()
+        packet = PacketHandler(PROTOCOL_VERSION)
+
+        try:
+            winch = read_motor_telemetry(
+                port,
+                packet,
+                WINCH_ID,
+                WINCH_BAUDRATE,
+            )
+            lock = read_motor_telemetry(
+                port,
+                packet,
+                LOCK_ID,
+                LOCK_BAUDRATE,
+            )
+        finally:
+            port.closePort()
+
+    return {
+        "success": True,
+        "winch": winch,
+        "lock": lock,
+    }
 
 
 # ============================================================
@@ -153,9 +316,8 @@ def write_velocity(velocity: int):
     """
     Send a signed goal velocity to the XW540.
 
-    The reduction gear reverses the physical direction:
-      RETRACT -> positive motor velocity
-      DEPLOY  -> negative motor velocity
+    RETRACT -> positive motor velocity
+    DEPLOY  -> negative motor velocity
     """
 
     global current_velocity
@@ -214,6 +376,14 @@ def get_motor_state() -> dict:
         "max_speed_level": len(SPEED_LEVELS),
         "velocity": current_velocity,
         "rpm": round(rpm, 1),
+        "unlock_diagnostics": {
+            "relief_motor_deg": UNLOCK_RELIEF_MOTOR_DEG,
+            "relief_ratchet_deg": UNLOCK_RELIEF_MOTOR_DEG / 2.0,
+            "lock_position_deg": last_unlock_lock_position_deg,
+            "lock_current_a": last_unlock_lock_current_a,
+            "position_error_deg": last_unlock_position_error_deg,
+            "success": last_unlock_success,
+        },
     }
 
 
@@ -231,6 +401,132 @@ def require_winch_ready():
 
 
 # ============================================================
+# RATCHET LOAD RELIEF
+# ============================================================
+
+def relieve_pawl_load():
+    """
+    Rotate the XW540 slightly in the RETRACT direction before
+    lifting the pawl.
+
+    The winch must already have torque enabled. The movement is
+    measured using Present Position instead of a fixed sleep.
+    """
+
+    global current_velocity
+
+    if not initialized:
+        raise RuntimeError("Initialize the system first")
+
+    if not torque_enabled:
+        raise RuntimeError(
+            "Enable winch torque before unlocking the mechanism"
+        )
+
+    # Ensure the winch is stationary before the relief move.
+    write_velocity(0)
+
+    with bus_lock:
+        port = open_bus()
+        packet = PacketHandler(PROTOCOL_VERSION)
+        motion_started = False
+
+        try:
+            set_bus_baudrate(port, WINCH_BAUDRATE)
+
+            start_position, comm_result, dxl_error = (
+                packet.read4ByteTxRx(
+                    port,
+                    WINCH_ID,
+                    ADDR_PRESENT_POSITION,
+                )
+            )
+            check_result(
+                packet,
+                comm_result,
+                dxl_error,
+                "Read winch start position",
+            )
+
+            # RETRACT is positive motor velocity.
+            command = UNLOCK_RELIEF_VELOCITY & 0xFFFFFFFF
+
+            comm_result, dxl_error = packet.write4ByteTxRx(
+                port,
+                WINCH_ID,
+                ADDR_GOAL_VELOCITY,
+                command,
+            )
+            check_result(
+                packet,
+                comm_result,
+                dxl_error,
+                "Start ratchet load-relief movement",
+            )
+
+            motion_started = True
+            current_velocity = UNLOCK_RELIEF_VELOCITY
+
+            deadline = (
+                time.monotonic()
+                + UNLOCK_RELIEF_TIMEOUT
+            )
+
+            while True:
+                position, comm_result, dxl_error = (
+                    packet.read4ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_PRESENT_POSITION,
+                    )
+                )
+                check_result(
+                    packet,
+                    comm_result,
+                    dxl_error,
+                    "Read winch relief position",
+                )
+
+                movement = (
+                    position - start_position
+                ) & 0xFFFFFFFF
+
+                if movement >= UNLOCK_RELIEF_COUNTS:
+                    break
+
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Ratchet load-relief movement timed out"
+                    )
+
+                time.sleep(
+                    UNLOCK_RELIEF_POLL_INTERVAL
+                )
+
+        finally:
+            if motion_started:
+                try:
+                    comm_result, dxl_error = (
+                        packet.write4ByteTxRx(
+                            port,
+                            WINCH_ID,
+                            ADDR_GOAL_VELOCITY,
+                            0,
+                        )
+                    )
+                    check_result(
+                        packet,
+                        comm_result,
+                        dxl_error,
+                        "Stop ratchet load-relief movement",
+                    )
+                finally:
+                    current_velocity = 0
+
+            port.closePort()
+
+
+# ============================================================
 # LOCK MOTOR HELPERS
 # ============================================================
 
@@ -238,8 +534,8 @@ def initialize_lock_motor(port, packet):
     """
     Configure the XW430 in Position Control Mode.
 
-    Initialization finishes with torque OFF so the spring can
-    keep the reduction gear mechanically locked.
+    Initialization finishes with torque OFF so the spring keeps
+    the ratchet mechanically locked.
     """
 
     global lock_state
@@ -301,29 +597,156 @@ def initialize_lock_motor(port, packet):
     lock_state = "locked"
 
 
-def unlock_mechanism():
-    """Enable XW430 torque and command the 205 degree unlock position."""
+def verify_unlock():
+    """
+    Verify that the XW430 reached the unlock position.
 
-    global lock_state
+    Returns (position_deg, current_a, error_deg).
+    Raises RuntimeError if the target is not reached in time.
+    """
 
-    if not initialized:
-        raise RuntimeError("Initialize the system first")
+    deadline = time.monotonic() + UNLOCK_VERIFY_TIMEOUT
 
-    lock_state = "unlocking"
+    last_position_deg = None
+    last_current_a = None
+    last_error_deg = None
 
-    try:
+    while time.monotonic() < deadline:
         with bus_lock:
             port = open_bus()
             packet = PacketHandler(PROTOCOL_VERSION)
 
             try:
-                set_bus_baudrate(port, LOCK_BAUDRATE)
-
-                comm_result, dxl_error = packet.write1ByteTxRx(
+                set_bus_baudrate(
                     port,
-                    LOCK_ID,
-                    LOCK_ADDR_TORQUE_ENABLE,
-                    TORQUE_ENABLE,
+                    LOCK_BAUDRATE,
+                )
+
+                raw_position, comm_result, dxl_error = (
+                    packet.read4ByteTxRx(
+                        port,
+                        LOCK_ID,
+                        ADDR_PRESENT_POSITION,
+                    )
+                )
+                check_result(
+                    packet,
+                    comm_result,
+                    dxl_error,
+                    "Read lock motor position",
+                )
+
+                raw_current, comm_result, dxl_error = (
+                    packet.read2ByteTxRx(
+                        port,
+                        LOCK_ID,
+                        ADDR_PRESENT_CURRENT,
+                    )
+                )
+                check_result(
+                    packet,
+                    comm_result,
+                    dxl_error,
+                    "Read lock motor current",
+                )
+
+            finally:
+                port.closePort()
+
+        last_position_deg = (
+            signed_32(raw_position)
+            * POSITION_DEG_PER_COUNT
+        )
+        last_current_a = (
+            signed_16(raw_current)
+            * PRESENT_CURRENT_MA_PER_UNIT
+            / 1000.0
+        )
+        last_error_deg = abs(
+            UNLOCK_POSITION_DEG
+            - last_position_deg
+        )
+
+        if (
+            last_error_deg
+            <= UNLOCK_POSITION_TOLERANCE_DEG
+        ):
+            return (
+                round(last_position_deg, 1),
+                round(last_current_a, 3),
+                round(last_error_deg, 1),
+            )
+
+        time.sleep(
+            UNLOCK_VERIFY_POLL_INTERVAL
+        )
+
+    raise RuntimeError(
+        "Unlock failed: lock motor did not reach "
+        f"{UNLOCK_POSITION_DEG:.1f} deg "
+        f"(last position "
+        f"{last_position_deg:.1f} deg, "
+        f"error {last_error_deg:.1f} deg, "
+        f"current {last_current_a:.3f} A)"
+    )
+
+
+def unlock_mechanism():
+    """
+    Unlock sequence:
+
+    1. Require XW540 torque to already be enabled.
+    2. Rotate XW540 6 degrees in RETRACT to unload the pawl.
+    3. Stop and wait briefly for the ratchet to settle.
+    4. Enable XW430 torque.
+    5. Command the pawl to 205 degrees.
+    6. Verify the XW430 actually reaches the unlock region.
+    """
+
+    global lock_state
+    global last_unlock_lock_position_deg
+    global last_unlock_lock_current_a
+    global last_unlock_position_error_deg
+    global last_unlock_success
+
+    if not initialized:
+        raise RuntimeError("Initialize the system first")
+
+    if not torque_enabled:
+        raise RuntimeError(
+            "Enable winch torque before unlocking the mechanism"
+        )
+
+    lock_state = "unlocking"
+    last_unlock_success = None
+
+    try:
+        # First unload the ratchet tooth from the pawl.
+        relieve_pawl_load()
+
+        # Give the loaded mechanism a short time to settle.
+        time.sleep(
+            UNLOCK_RELIEF_SETTLE_DELAY
+        )
+
+        # Lift the pawl with the XW430.
+        with bus_lock:
+            port = open_bus()
+            packet = PacketHandler(PROTOCOL_VERSION)
+
+            try:
+                set_bus_baudrate(
+                    port,
+                    LOCK_BAUDRATE,
+                )
+
+                comm_result, dxl_error = (
+                    packet.write1ByteTxRx(
+                        port,
+                        LOCK_ID,
+                        LOCK_ADDR_TORQUE_ENABLE,
+                        TORQUE_ENABLE,
+                    )
                 )
                 check_result(
                     packet,
@@ -332,11 +755,13 @@ def unlock_mechanism():
                     "Enable lock motor torque",
                 )
 
-                comm_result, dxl_error = packet.write4ByteTxRx(
-                    port,
-                    LOCK_ID,
-                    LOCK_ADDR_GOAL_POSITION,
-                    UNLOCK_POSITION_RAW,
+                comm_result, dxl_error = (
+                    packet.write4ByteTxRx(
+                        port,
+                        LOCK_ID,
+                        LOCK_ADDR_GOAL_POSITION,
+                        UNLOCK_POSITION_RAW,
+                    )
                 )
                 check_result(
                     packet,
@@ -348,13 +773,49 @@ def unlock_mechanism():
             finally:
                 port.closePort()
 
-        # No strict encoder check: the mechanism does not necessarily
-        # settle at an exact absolute angle under spring/load effects.
+        # Give the pawl time to start moving.
         time.sleep(LOCK_COMMAND_DELAY)
+
+        (
+            position_deg,
+            current_a,
+            error_deg,
+        ) = verify_unlock()
+
+        last_unlock_lock_position_deg = position_deg
+        last_unlock_lock_current_a = current_a
+        last_unlock_position_error_deg = error_deg
+        last_unlock_success = True
+
         lock_state = "unlocked"
 
     except Exception:
+        last_unlock_success = False
         lock_state = "locked"
+
+        # Fail safe: release XW430 torque so the spring can
+        # return the pawl toward the locked position.
+        try:
+            with bus_lock:
+                port = open_bus()
+                packet = PacketHandler(PROTOCOL_VERSION)
+
+                try:
+                    set_bus_baudrate(
+                        port,
+                        LOCK_BAUDRATE,
+                    )
+                    packet.write1ByteTxRx(
+                        port,
+                        LOCK_ID,
+                        LOCK_ADDR_TORQUE_ENABLE,
+                        TORQUE_DISABLE,
+                    )
+                finally:
+                    port.closePort()
+        except Exception:
+            pass
+
         raise
 
 
@@ -428,7 +889,6 @@ def execute_retract() -> dict:
         if speed_level < len(SPEED_LEVELS) - 1:
             speed_level += 1
 
-        # Reversed by the reduction gear.
         velocity = SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
@@ -436,7 +896,6 @@ def execute_retract() -> dict:
         if speed_level > 0:
             speed_level -= 1
 
-            # Still physically deploying until speed reaches zero.
             velocity = -SPEED_LEVELS[speed_level]
             write_velocity(velocity)
         else:
@@ -446,7 +905,6 @@ def execute_retract() -> dict:
         direction = -1
         speed_level = 0
 
-        # Reversed by the reduction gear.
         velocity = SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
@@ -465,7 +923,6 @@ def execute_deploy() -> dict:
         if speed_level < len(SPEED_LEVELS) - 1:
             speed_level += 1
 
-        # Reversed by the reduction gear.
         velocity = -SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
@@ -473,7 +930,6 @@ def execute_deploy() -> dict:
         if speed_level > 0:
             speed_level -= 1
 
-            # Still physically retracting until speed reaches zero.
             velocity = SPEED_LEVELS[speed_level]
             write_velocity(velocity)
         else:
@@ -483,7 +939,6 @@ def execute_deploy() -> dict:
         direction = 1
         speed_level = 0
 
-        # Reversed by the reduction gear.
         velocity = -SPEED_LEVELS[speed_level]
         write_velocity(velocity)
 
@@ -523,11 +978,16 @@ def ping_motor() -> dict:
             packet = PacketHandler(PROTOCOL_VERSION)
 
             try:
-                set_bus_baudrate(port, WINCH_BAUDRATE)
-
-                winch_model, comm_result, dxl_error = packet.ping(
+                set_bus_baudrate(
                     port,
-                    WINCH_ID,
+                    WINCH_BAUDRATE,
+                )
+
+                winch_model, comm_result, dxl_error = (
+                    packet.ping(
+                        port,
+                        WINCH_ID,
+                    )
                 )
                 check_result(
                     packet,
@@ -536,11 +996,16 @@ def ping_motor() -> dict:
                     "Ping winch motor",
                 )
 
-                set_bus_baudrate(port, LOCK_BAUDRATE)
-
-                lock_model, comm_result, dxl_error = packet.ping(
+                set_bus_baudrate(
                     port,
-                    LOCK_ID,
+                    LOCK_BAUDRATE,
+                )
+
+                lock_model, comm_result, dxl_error = (
+                    packet.ping(
+                        port,
+                        LOCK_ID,
+                    )
                 )
                 check_result(
                     packet,
@@ -594,13 +1059,18 @@ def initialize_motor() -> dict:
 
             try:
                 # ---------------- WINCH MOTOR ----------------
-                set_bus_baudrate(port, WINCH_BAUDRATE)
-
-                comm_result, dxl_error = packet.write1ByteTxRx(
+                set_bus_baudrate(
                     port,
-                    WINCH_ID,
-                    ADDR_TORQUE_ENABLE,
-                    TORQUE_DISABLE,
+                    WINCH_BAUDRATE,
+                )
+
+                comm_result, dxl_error = (
+                    packet.write1ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_TORQUE_ENABLE,
+                        TORQUE_DISABLE,
+                    )
                 )
                 check_result(
                     packet,
@@ -609,11 +1079,13 @@ def initialize_motor() -> dict:
                     "Disable winch torque",
                 )
 
-                comm_result, dxl_error = packet.write1ByteTxRx(
-                    port,
-                    WINCH_ID,
-                    ADDR_OPERATING_MODE,
-                    VELOCITY_MODE,
+                comm_result, dxl_error = (
+                    packet.write1ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_OPERATING_MODE,
+                        VELOCITY_MODE,
+                    )
                 )
                 check_result(
                     packet,
@@ -622,11 +1094,13 @@ def initialize_motor() -> dict:
                     "Set winch velocity mode",
                 )
 
-                comm_result, dxl_error = packet.write4ByteTxRx(
-                    port,
-                    WINCH_ID,
-                    ADDR_PROFILE_ACCELERATION,
-                    WINCH_PROFILE_ACCELERATION,
+                comm_result, dxl_error = (
+                    packet.write4ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_PROFILE_ACCELERATION,
+                        WINCH_PROFILE_ACCELERATION,
+                    )
                 )
                 check_result(
                     packet,
@@ -635,11 +1109,13 @@ def initialize_motor() -> dict:
                     "Set winch profile acceleration",
                 )
 
-                comm_result, dxl_error = packet.write4ByteTxRx(
-                    port,
-                    WINCH_ID,
-                    ADDR_GOAL_VELOCITY,
-                    0,
+                comm_result, dxl_error = (
+                    packet.write4ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_GOAL_VELOCITY,
+                        0,
+                    )
                 )
                 check_result(
                     packet,
@@ -649,7 +1125,10 @@ def initialize_motor() -> dict:
                 )
 
                 # ---------------- LOCK MOTOR -----------------
-                initialize_lock_motor(port, packet)
+                initialize_lock_motor(
+                    port,
+                    packet,
+                )
 
                 direction = 0
                 speed_level = 0
@@ -693,13 +1172,18 @@ def enable_torque() -> dict:
             packet = PacketHandler(PROTOCOL_VERSION)
 
             try:
-                set_bus_baudrate(port, WINCH_BAUDRATE)
-
-                comm_result, dxl_error = packet.write1ByteTxRx(
+                set_bus_baudrate(
                     port,
-                    WINCH_ID,
-                    ADDR_TORQUE_ENABLE,
-                    TORQUE_ENABLE,
+                    WINCH_BAUDRATE,
+                )
+
+                comm_result, dxl_error = (
+                    packet.write1ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_TORQUE_ENABLE,
+                        TORQUE_ENABLE,
+                    )
                 )
                 check_result(
                     packet,
@@ -731,8 +1215,7 @@ def disable_torque() -> dict:
     Stop and disable winch torque.
 
     The lock motor is also released so the spring engages the
-    mechanical lock. This prevents an unlocked gearbox with the
-    winch motor unpowered.
+    mechanical lock.
     """
 
     global direction
@@ -743,7 +1226,9 @@ def disable_torque() -> dict:
 
     try:
         if not initialized:
-            raise RuntimeError("System is not initialized")
+            raise RuntimeError(
+                "System is not initialized"
+            )
 
         with bus_lock:
             port = open_bus()
@@ -751,13 +1236,18 @@ def disable_torque() -> dict:
 
             try:
                 # Stop winch.
-                set_bus_baudrate(port, WINCH_BAUDRATE)
-
-                comm_result, dxl_error = packet.write4ByteTxRx(
+                set_bus_baudrate(
                     port,
-                    WINCH_ID,
-                    ADDR_GOAL_VELOCITY,
-                    0,
+                    WINCH_BAUDRATE,
+                )
+
+                comm_result, dxl_error = (
+                    packet.write4ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_GOAL_VELOCITY,
+                        0,
+                    )
                 )
                 check_result(
                     packet,
@@ -767,11 +1257,13 @@ def disable_torque() -> dict:
                 )
 
                 # Disable winch torque.
-                comm_result, dxl_error = packet.write1ByteTxRx(
-                    port,
-                    WINCH_ID,
-                    ADDR_TORQUE_ENABLE,
-                    TORQUE_DISABLE,
+                comm_result, dxl_error = (
+                    packet.write1ByteTxRx(
+                        port,
+                        WINCH_ID,
+                        ADDR_TORQUE_ENABLE,
+                        TORQUE_DISABLE,
+                    )
                 )
                 check_result(
                     packet,
@@ -781,13 +1273,18 @@ def disable_torque() -> dict:
                 )
 
                 # Fail-safe: engage mechanical lock.
-                set_bus_baudrate(port, LOCK_BAUDRATE)
-
-                comm_result, dxl_error = packet.write1ByteTxRx(
+                set_bus_baudrate(
                     port,
-                    LOCK_ID,
-                    LOCK_ADDR_TORQUE_ENABLE,
-                    TORQUE_DISABLE,
+                    LOCK_BAUDRATE,
+                )
+
+                comm_result, dxl_error = (
+                    packet.write1ByteTxRx(
+                        port,
+                        LOCK_ID,
+                        LOCK_ADDR_TORQUE_ENABLE,
+                        TORQUE_DISABLE,
+                    )
                 )
                 check_result(
                     packet,
@@ -822,14 +1319,20 @@ def disable_torque() -> dict:
 def toggle_lock() -> dict:
     try:
         if not initialized:
-            raise RuntimeError("Initialize the system first")
+            raise RuntimeError(
+                "Initialize the system first"
+            )
 
         if lock_state == "locked":
             unlock_mechanism()
         elif lock_state == "unlocked":
-            lock_mechanism(stop_winch=True)
+            lock_mechanism(
+                stop_winch=True
+            )
         else:
-            raise RuntimeError("Lock mechanism is busy")
+            raise RuntimeError(
+                "Lock mechanism is busy"
+            )
 
         return get_motor_state()
 
@@ -837,12 +1340,32 @@ def toggle_lock() -> dict:
         return {
             "success": False,
             "error": str(exc),
+            "lock_state": lock_state,
+            "unlock_diagnostics": {
+                "relief_motor_deg": UNLOCK_RELIEF_MOTOR_DEG,
+                "relief_ratchet_deg": UNLOCK_RELIEF_MOTOR_DEG / 2.0,
+                "lock_position_deg": last_unlock_lock_position_deg,
+                "lock_current_a": last_unlock_lock_current_a,
+                "position_error_deg": last_unlock_position_error_deg,
+                "success": last_unlock_success,
+            },
         }
 
 
 # ============================================================
 # MOTOR STATE / MOTION HTTP ENDPOINTS
 # ============================================================
+
+@get("/motor/telemetry", sync_to_thread=True)
+def motor_telemetry() -> dict:
+    try:
+        return read_all_telemetry()
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
 
 @get("/motor/state", sync_to_thread=False)
 def motor_state() -> dict:
@@ -976,7 +1499,10 @@ def mavlink_listener():
             command_ready = False
 
             if pwm == PWM_RETRACT:
-                print("Xbox command: RETRACT", flush=True)
+                print(
+                    "Xbox command: RETRACT",
+                    flush=True,
+                )
                 try:
                     result = execute_retract()
                     print(
@@ -991,10 +1517,16 @@ def mavlink_listener():
                     )
 
             elif pwm == PWM_STOP:
-                print("Xbox command: STOP", flush=True)
+                print(
+                    "Xbox command: STOP",
+                    flush=True,
+                )
                 try:
                     execute_stop()
-                    print("Winch stopped", flush=True)
+                    print(
+                        "Winch stopped",
+                        flush=True,
+                    )
                 except Exception as exc:
                     print(
                         f"Stop command failed: {exc}",
@@ -1002,7 +1534,10 @@ def mavlink_listener():
                     )
 
             elif pwm == PWM_DEPLOY:
-                print("Xbox command: DEPLOY", flush=True)
+                print(
+                    "Xbox command: DEPLOY",
+                    flush=True,
+                )
                 try:
                     result = execute_deploy()
                     print(
@@ -1059,6 +1594,7 @@ app = Litestar(
         disable_torque,
         toggle_lock,
         motor_state,
+        motor_telemetry,
         stop_motor,
         command_retract,
         command_deploy,
