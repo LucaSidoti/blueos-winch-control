@@ -100,7 +100,7 @@ UNLOCK_RELIEF_COUNTS = round(
 )
 
 UNLOCK_RELIEF_VELOCITY = 20
-UNLOCK_RELIEF_TIMEOUT = 1.0
+UNLOCK_RELIEF_TIMEOUT = 2.0
 UNLOCK_RELIEF_POLL_INTERVAL = 0.02
 UNLOCK_RELIEF_SETTLE_DELAY = 0.2
 
@@ -487,16 +487,20 @@ def relieve_pawl_load():
                     "Read winch relief position",
                 )
 
-                movement = (
-                    position - start_position
-                ) & 0xFFFFFFFF
+                start_position_signed = signed_32(start_position)
+                position_signed = signed_32(position)
+                movement = position_signed - start_position_signed
 
                 if movement >= UNLOCK_RELIEF_COUNTS:
                     break
 
                 if time.monotonic() >= deadline:
+                    movement_deg = movement * POSITION_DEG_PER_COUNT
+
                     raise RuntimeError(
-                        "Ratchet load-relief movement timed out"
+                        "Ratchet load-relief movement timed out: "
+                        f"moved {movement_deg:.1f} deg, "
+                        f"target {UNLOCK_RELIEF_MOTOR_DEG:.1f} deg"
                     )
 
                 time.sleep(
