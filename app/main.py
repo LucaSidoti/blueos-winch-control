@@ -82,13 +82,14 @@ UNLOCK_POSITION_RAW = round(
 
 LOCK_PROFILE_ACCELERATION = 5
 LOCK_PROFILE_VELOCITY = 20
-LOCK_COMMAND_DELAY = 0.3
+LOCK_COMMAND_DELAY = 0.6
 
 # Ratchet/pawl load-relief movement before unlocking.
 # The ratchet has 24 teeth -> 15 degrees per tooth.
 # With a 2:1 reduction, 8 motor degrees = 4 ratchet degrees.
 WINCH_COUNTS_PER_REV = 4096
-UNLOCK_RELIEF_MOTOR_DEG = 8.0
+UNLOCK_RELIEF_MOTOR_DEG = 12.0
+UNLOCK_RELIEF_SETTLE_DELAY = 0.2
 UNLOCK_RELIEF_COUNTS = round(
     WINCH_COUNTS_PER_REV * UNLOCK_RELIEF_MOTOR_DEG / 360.0
 )
@@ -509,7 +510,8 @@ def unlock_mechanism():
         )
 
     relieve_pawl_load()
-
+    time.sleep(UNLOCK_RELIEF_SETTLE_DELAY)
+    
     lock_state = "unlocking"
 
     try:
