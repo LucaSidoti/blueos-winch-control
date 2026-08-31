@@ -601,9 +601,17 @@ def verify_unlock():
     """
     Verify that the XW430 reached the unlock position.
 
+    The latest measured position, current and position error are stored
+    in the application diagnostics on every poll, including failed
+    unlock attempts.
+
     Returns (position_deg, current_a, error_deg).
     Raises RuntimeError if the target is not reached in time.
     """
+
+    global last_unlock_lock_position_deg
+    global last_unlock_lock_current_a
+    global last_unlock_position_error_deg
 
     deadline = time.monotonic() + UNLOCK_VERIFY_TIMEOUT
 
@@ -667,27 +675,38 @@ def verify_unlock():
             - last_position_deg
         )
 
+        # Persist every measurement so a failed attempt still leaves
+        # useful diagnostics for the UI and /motor/state endpoint.
+        last_unlock_lock_position_deg = round(last_position_deg, 1)
+        last_unlock_lock_current_a = round(last_current_a, 3)
+        last_unlock_position_error_deg = round(last_error_deg, 1)
+
         if (
             last_error_deg
             <= UNLOCK_POSITION_TOLERANCE_DEG
         ):
             return (
-                round(last_position_deg, 1),
-                round(last_current_a, 3),
-                round(last_error_deg, 1),
+                last_unlock_lock_position_deg,
+                last_unlock_lock_current_a,
+                last_unlock_position_error_deg,
             )
 
         time.sleep(
             UNLOCK_VERIFY_POLL_INTERVAL
         )
 
+    if last_position_deg is None:
+        raise RuntimeError(
+            "Unlock failed: no lock motor position measurement was obtained"
+        )
+
     raise RuntimeError(
         "Unlock failed: lock motor did not reach "
         f"{UNLOCK_POSITION_DEG:.1f} deg "
         f"(last position "
-        f"{last_position_deg:.1f} deg, "
-        f"error {last_error_deg:.1f} deg, "
-        f"current {last_current_a:.3f} A)"
+        f"{last_unlock_lock_position_deg:.1f} deg, "
+        f"error {last_unlock_position_error_deg:.1f} deg, "
+        f"current {last_unlock_lock_current_a:.3f} A)"
     )
 
 
@@ -718,6 +737,9 @@ def unlock_mechanism():
         )
 
     lock_state = "unlocking"
+    last_unlock_lock_position_deg = None
+    last_unlock_lock_current_a = None
+    last_unlock_position_error_deg = None
     last_unlock_success = None
 
     try:
