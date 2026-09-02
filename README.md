@@ -1,4 +1,4 @@
-# QuickStart-Python-Extension
+# QuickStart Python Extension
 
 A quick-start repository for building and uploading a Python-focused BlueOS Extension.
 
