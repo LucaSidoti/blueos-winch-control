@@ -2,15 +2,11 @@
 
 from pathlib import Path
 from threading import Thread
-
 from litestar import Litestar, get, post
 from litestar.static_files.config import StaticFilesConfig
-
-
 import config
 import control
 from mavlink_bridge import mavlink_listener
-
 
 # ============================================================
 # GENERAL STATUS

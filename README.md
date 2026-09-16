@@ -19,6 +19,19 @@ It is also possible to manually run the Action (via the Actions tab), or to buil
 
 >💡**Note:** If you are forking this repository as a starting point for creating your own [BlueOS Extension](https://blueos.cloud/docs/blueos/latest/development/extensions), it is recommended to enable `Issues` in your fork (via the `Settings` tab at the top), so that users and co-developers of your Extension can raise problems and make suggestions.
 
+## Code organization
+
+- `app/control.py`: motor commands and movement sequences (initialize, unlock,
+  lock, deploy, retract, and stop). Start here when editing motor behavior.
+- `app/motor_bus.py`: reusable Dynamixel reads, writes, error handling, telemetry,
+  and port cleanup.
+- `app/state.py`: shared motion, lock, and safety state, plus the bus lock.
+- `app/retract_safety.py`: reference capture, braking calculations, retract checks,
+  and the background safety monitor.
+- `app/config.py`: hardware settings, speeds, and thresholds.
+- `app/main.py` and `app/mavlink_bridge.py`: HTTP and MAVLink interfaces that call
+  the shared control functions.
+
 ## Retract limit
 
 Each successful **Initialize** captures the winch's current signed, multi-turn

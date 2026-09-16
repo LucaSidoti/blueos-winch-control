@@ -1,10 +1,8 @@
 """Translate MAVLink servo signals into shared motor control commands."""
 
 from pymavlink import mavutil
-
 import config
 import control
-
 
 # ============================================================
 # MAVLINK HELPERS

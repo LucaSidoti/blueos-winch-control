@@ -12,4 +12,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-py-modules = ["main", "config", "control", "mavlink_bridge"]
+py-modules = ["main", "config", "control", "mavlink_bridge", "motor_bus", "state", "retract_safety"]
