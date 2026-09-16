@@ -6,7 +6,10 @@ module does not start a listener or move either motor.
 """
 
 from pathlib import Path
-from threading import Lock
+from functools import wraps
+from threading import Event, RLock, Thread
+import logging
+import math
 import time
 
 from dynamixel_sdk import PortHandler, PacketHandler, COMM_SUCCESS
@@ -37,7 +40,30 @@ last_unlock_lock_current_a = None
 last_unlock_position_error_deg = None
 last_unlock_success = None
 
-bus_lock = Lock()
+bus_lock = RLock()
+
+# Positive encoder counts are retract. Never wrap this reference to one turn.
+retract_limit_position = None
+last_winch_position = None
+retract_limit_reached = False
+retract_limit_fault = None
+_retract_stop_pending = False
+_limit_monitor_thread = None
+_limit_monitor_shutdown = Event()
+logger = logging.getLogger(__name__)
+
+
+def serialized_control(function):
+    """Serialize state changes and bus access with the safety monitor.
+
+    A reentrant lock allows command sequences to call other control helpers.
+    The unlock relief loop monitors its own movement while holding this lock.
+    """
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with bus_lock:
+            return function(*args, **kwargs)
+    return wrapped
 
 
 # ============================================================
@@ -208,43 +234,214 @@ def read_all_telemetry():
 # WINCH MOTOR HELPERS
 # ============================================================
 
-def write_velocity(velocity: int):
-    """
-    Send a signed goal velocity to the XW540.
+def _read_winch_feedback(port, packet):
+    """Read unrounded, signed multi-turn position and actual velocity."""
+    global last_winch_position
 
-    RETRACT -> positive motor velocity
-    DEPLOY  -> negative motor velocity
-    """
+    position, result, error = packet.read4ByteTxRx(
+        port, config.WINCH_ID, config.ADDR_PRESENT_POSITION
+    )
+    check_result(packet, result, error, "Read winch limit position")
+    velocity, result, error = packet.read4ByteTxRx(
+        port, config.WINCH_ID, config.ADDR_PRESENT_VELOCITY
+    )
+    check_result(packet, result, error, "Read winch limit velocity")
+    if torque_enabled:
+        torque, result, error = packet.read1ByteTxRx(
+            port, config.WINCH_ID, config.ADDR_TORQUE_ENABLE
+        )
+        check_result(packet, result, error, "Read winch torque status")
+        if torque != config.TORQUE_ENABLE:
+            raise RuntimeError("Winch torque was lost; initialize again before moving")
+    last_winch_position = signed_32(position)
+    return last_winch_position, signed_32(velocity)
 
+
+def _retract_stopping_counts(velocity):
+    """Conservative braking envelope for the configured velocity-based profile.
+
+    ROBOTIS specifies 0.229 rpm per velocity unit and 214.577 rpm/min
+    per acceleration unit. Physical load, bus delays, and inertia still require
+    on-hardware validation; this is not a hardware limit switch.
+    """
+    if (
+        config.RETRACT_LIMIT_POLL_INTERVAL <= 0
+        or config.RETRACT_LIMIT_REACTION_TIME < 0
+        or config.RETRACT_LIMIT_BRAKING_FACTOR < 1
+        or config.RETRACT_LIMIT_MARGIN_DEG < 0
+    ):
+        raise RuntimeError("Invalid retract limit braking configuration")
+    acceleration = (
+        config.WINCH_PROFILE_ACCELERATION
+        * config.DYNAMIXEL_ACCEL_RPM_PER_MIN_PER_UNIT
+        * config.WINCH_COUNTS_PER_REV / 3600.0
+    )
+    if acceleration <= 0:
+        raise RuntimeError("Retract limit requires a positive profile acceleration")
+    speed = (
+        max(0, velocity) * config.DYNAMIXEL_RPM_PER_UNIT
+        * config.WINCH_COUNTS_PER_REV / 60.0
+    )
+    reaction_time = max(
+        config.RETRACT_LIMIT_REACTION_TIME, config.RETRACT_LIMIT_POLL_INTERVAL
+    )
+    return math.ceil(
+        config.RETRACT_LIMIT_BRAKING_FACTOR * speed * speed / (2.0 * acceleration)
+        + speed * reaction_time
+        + config.RETRACT_LIMIT_MARGIN_DEG / config.POSITION_DEG_PER_COUNT
+    )
+
+
+def _send_winch_velocity(port, packet, velocity):
+    """Write a goal on an already locked/open winch bus; update on success only."""
     global current_velocity
+    result, error = packet.write4ByteTxRx(
+        port, config.WINCH_ID, config.ADDR_GOAL_VELOCITY, velocity & 0xFFFFFFFF
+    )
+    check_result(packet, result, error, "Set goal velocity")
+    current_velocity = velocity
+
+
+def _stop_for_retract_limit(port, packet):
+    global direction, speed_level, _retract_stop_pending
+    # Keep retrying from the monitor if the write fails. Never claim a stop
+    # succeeded merely because we attempted it.
+    _retract_stop_pending = True
+    _send_winch_velocity(port, packet, 0)
+    direction = 0
+    speed_level = 0
+
+
+def _record_limit_fault(exc):
+    global retract_limit_fault, _retract_stop_pending
+    message = str(exc)
+    if retract_limit_fault != message:
+        logger.error("Retract safety fault: %s", message)
+    retract_limit_fault = message
+    _retract_stop_pending = True
+
+
+def _require_limit_reference():
+    if not initialized or retract_limit_position is None:
+        raise RuntimeError("Initialize the system to establish the retract limit")
+    if retract_limit_fault is not None:
+        raise RuntimeError(f"Retract safety fault: {retract_limit_fault}; initialize again")
+    if _limit_monitor_thread is None or not _limit_monitor_thread.is_alive():
+        raise RuntimeError("Retract safety monitor is not running; initialize again")
+
+
+@serialized_control
+def check_retract_limit():
+    """One monitor cycle, also callable in hardware-free regression tests."""
+    global retract_limit_reached, _retract_stop_pending
+    if not initialized or not torque_enabled:
+        return
+    if current_velocity <= 0 and not _retract_stop_pending:
+        return
+
+    port = None
+    try:
+        port = open_bus()
+        packet = PacketHandler(config.PROTOCOL_VERSION)
+        set_bus_baudrate(port, config.WINCH_BAUDRATE)
+        try:
+            position, measured_velocity = _read_winch_feedback(port, packet)
+            if retract_limit_position is None:
+                raise RuntimeError("Retract reference is missing")
+            if retract_limit_fault is not None:
+                _stop_for_retract_limit(port, packet)
+            elif current_velocity > 0 and (
+                retract_limit_position - position
+                <= _retract_stopping_counts(max(current_velocity, measured_velocity))
+            ):
+                retract_limit_reached = True
+                _stop_for_retract_limit(port, packet)
+            # Continue checking during deceleration even after goal velocity is 0.
+            if current_velocity <= 0 and measured_velocity <= 0:
+                _retract_stop_pending = False
+        except Exception as exc:
+            _record_limit_fault(exc)
+            _stop_for_retract_limit(port, packet)
+    except Exception as exc:
+        _record_limit_fault(exc)
+    finally:
+        if port is not None:
+            port.closePort()
+
+
+def _retract_limit_monitor():
+    while not _limit_monitor_shutdown.wait(config.RETRACT_LIMIT_POLL_INTERVAL):
+        try:
+            check_retract_limit()
+        except Exception as exc:
+            # Unexpected errors must not silently kill the monitoring thread.
+            with bus_lock:
+                _record_limit_fault(exc)
+
+
+def _start_retract_limit_monitor():
+    global _limit_monitor_thread
+    if _limit_monitor_thread is not None and _limit_monitor_thread.is_alive():
+        return
+    _limit_monitor_shutdown.clear()
+    _limit_monitor_thread = Thread(
+        target=_retract_limit_monitor, name="winch-retract-limit", daemon=True
+    )
+    _limit_monitor_thread.start()
+
+
+@serialized_control
+def write_velocity(velocity: int):
+    """Command motor velocity, guarding every positive (retract) command.
+
+    Unlock load relief has a separate, bounded loop; it cannot be requested
+    through this function, HTTP movement commands, or MAVLink commands.
+    """
+    global retract_limit_reached, _retract_stop_pending
+
+    if velocity != 0:
+        _require_limit_reference()
+        if not torque_enabled:
+            raise RuntimeError("Motor torque is not enabled")
+        if lock_state != "unlocked":
+            raise RuntimeError("Mechanical lock is engaged")
 
     with bus_lock:
         port = open_bus()
         packet = PacketHandler(config.PROTOCOL_VERSION)
-
         try:
             set_bus_baudrate(port, config.WINCH_BAUDRATE)
-
-            command = velocity & 0xFFFFFFFF
-
-            comm_result, dxl_error = packet.write4ByteTxRx(
-                port,
-                config.WINCH_ID,
-                config.ADDR_GOAL_VELOCITY,
-                command,
-            )
-
-            check_result(
-                packet,
-                comm_result,
-                dxl_error,
-                "Set goal velocity",
-            )
-
-            current_velocity = velocity
-
+            if velocity > 0:
+                try:
+                    position, measured_velocity = _read_winch_feedback(port, packet)
+                    stopping_counts = _retract_stopping_counts(
+                        max(velocity, current_velocity, measured_velocity)
+                    )
+                except Exception as exc:
+                    _record_limit_fault(exc)
+                    _stop_for_retract_limit(port, packet)
+                    raise
+                if retract_limit_position - position <= stopping_counts:
+                    retract_limit_reached = True
+                    _stop_for_retract_limit(port, packet)
+                    raise RuntimeError("Retract limit reached (including braking allowance)")
+            previous_velocity = current_velocity
+            try:
+                _send_winch_velocity(port, packet, velocity)
+            except Exception as exc:
+                # A missing acknowledgement does not prove the motor ignored
+                # the command. Latch a fault and attempt a stop immediately.
+                _record_limit_fault(exc)
+                _stop_for_retract_limit(port, packet)
+                raise
+            if velocity <= 0:
+                # Reversal/stop commands do not instantly remove positive motion.
+                _retract_stop_pending = _retract_stop_pending or previous_velocity > 0
+            if velocity != 0:
+                retract_limit_reached = False
         finally:
             port.closePort()
+
 
 
 def get_motor_state() -> dict:
@@ -272,6 +469,14 @@ def get_motor_state() -> dict:
         "max_speed_level": len(config.SPEED_LEVELS),
         "velocity": current_velocity,
         "rpm": round(rpm, 1),
+        "retract_limit": {
+            "position_counts": retract_limit_position,
+            "last_position_counts": last_winch_position,
+            "reached": retract_limit_reached,
+            "fault": retract_limit_fault,
+            "stopping": _retract_stop_pending,
+            "unlock_allowance_deg": config.UNLOCK_RELIEF_MOTOR_DEG,
+        },
         "unlock_diagnostics": {
             "relief_motor_deg": config.UNLOCK_RELIEF_MOTOR_DEG,
             "relief_ratchet_deg": config.UNLOCK_RELIEF_MOTOR_DEG / 2.0,
@@ -295,11 +500,14 @@ def require_winch_ready():
     if lock_state != "unlocked":
         raise RuntimeError("Mechanical lock is engaged")
 
+    _require_limit_reference()
+
 
 # ============================================================
 # RATCHET LOAD RELIEF
 # ============================================================
 
+@serialized_control
 def relieve_pawl_load():
     """
     Rotate the XW540 slightly in the RETRACT direction before
@@ -319,8 +527,12 @@ def relieve_pawl_load():
             "Enable winch torque before unlocking the mechanism"
         )
 
+    _require_limit_reference()
+    if lock_state != "unlocking":
+        raise RuntimeError("Load relief is only allowed during unlocking")
+
     # Ensure the winch is stationary before the relief move.
-    write_velocity(0)
+    execute_stop()
 
     with bus_lock:
         port = open_bus()
@@ -344,9 +556,16 @@ def relieve_pawl_load():
                 "Read winch start position",
             )
 
+            relief_ceiling = retract_limit_position + config.UNLOCK_RELIEF_COUNTS
+            if signed_32(start_position) + config.UNLOCK_RELIEF_COUNTS > relief_ceiling:
+                raise RuntimeError(
+                    "Unlock relief would exceed its allowance beyond the retract limit"
+                )
+
             # RETRACT is positive motor velocity.
             command = config.UNLOCK_RELIEF_VELOCITY & 0xFFFFFFFF
 
+            motion_started = True  # Also stop on an ambiguous start acknowledgement.
             comm_result, dxl_error = packet.write4ByteTxRx(
                 port,
                 config.WINCH_ID,
@@ -360,7 +579,6 @@ def relieve_pawl_load():
                 "Start ratchet load-relief movement",
             )
 
-            motion_started = True
             current_velocity = config.UNLOCK_RELIEF_VELOCITY
 
             deadline = (
@@ -404,32 +622,23 @@ def relieve_pawl_load():
                 )
 
         finally:
-            if motion_started:
-                try:
-                    comm_result, dxl_error = (
-                        packet.write4ByteTxRx(
-                            port,
-                            config.WINCH_ID,
-                            config.ADDR_GOAL_VELOCITY,
-                            0,
-                        )
-                    )
-                    check_result(
-                        packet,
-                        comm_result,
-                        dxl_error,
-                        "Stop ratchet load-relief movement",
-                    )
-                finally:
-                    current_velocity = 0
+            try:
+                if motion_started:
+                    try:
+                        _send_winch_velocity(port, packet, 0)
+                    except Exception as exc:
+                        _record_limit_fault(exc)
+                        raise
+            finally:
+                port.closePort()
 
-            port.closePort()
 
 
 # ============================================================
 # LOCK MOTOR HELPERS
 # ============================================================
 
+@serialized_control
 def initialize_lock_motor(port, packet):
     """
     Configure the XW430 in Position Control Mode.
@@ -610,6 +819,7 @@ def verify_unlock():
     )
 
 
+@serialized_control
 def unlock_mechanism():
     """
     Unlock sequence:
@@ -635,6 +845,10 @@ def unlock_mechanism():
         raise RuntimeError(
             "Enable winch torque before unlocking the mechanism"
         )
+
+    _require_limit_reference()
+    if lock_state != "locked":
+        raise RuntimeError("Mechanical lock must be engaged before unlocking")
 
     lock_state = "unlocking"
     last_unlock_lock_position_deg = None
@@ -741,6 +955,7 @@ def unlock_mechanism():
         raise
 
 
+@serialized_control
 def lock_mechanism(stop_winch=True):
     """
     Disable XW430 torque so the spring engages the mechanical lock.
@@ -786,6 +1001,7 @@ def lock_mechanism(stop_winch=True):
 # INTERNAL WINCH COMMANDS
 # ============================================================
 
+@serialized_control
 def execute_stop() -> dict:
     """Stop the winch and reset motion state."""
 
@@ -799,72 +1015,35 @@ def execute_stop() -> dict:
     return get_motor_state()
 
 
-def execute_retract() -> dict:
-    """Retract the cable; repeated commands increase retract speed."""
-
-    global direction
-    global speed_level
-
+@serialized_control
+def _execute_direction(requested_direction):
+    global direction, speed_level
     require_winch_ready()
-
-    if direction == -1:
-        if speed_level < len(config.SPEED_LEVELS) - 1:
-            speed_level += 1
-
-        velocity = config.SPEED_LEVELS[speed_level]
-        write_velocity(velocity)
-
-    elif direction == 1:
-        if speed_level > 0:
-            speed_level -= 1
-
-            velocity = -config.SPEED_LEVELS[speed_level]
-            write_velocity(velocity)
-        else:
+    if direction == requested_direction:
+        next_level = min(speed_level + 1, len(config.SPEED_LEVELS) - 1)
+        next_direction = direction
+    elif direction != 0:
+        if speed_level == 0:
             return execute_stop()
-
+        next_level = speed_level - 1
+        next_direction = direction
     else:
-        direction = -1
-        speed_level = 0
-
-        velocity = config.SPEED_LEVELS[speed_level]
-        write_velocity(velocity)
-
+        next_level = 0
+        next_direction = requested_direction
+    write_velocity(-next_direction * config.SPEED_LEVELS[next_level])
+    direction = next_direction
+    speed_level = next_level
     return get_motor_state()
+
+
+def execute_retract() -> dict:
+    """Retract or reduce deployment speed, respecting the initialization limit."""
+    return _execute_direction(-1)
 
 
 def execute_deploy() -> dict:
-    """Deploy the cable; repeated commands increase deploy speed."""
-
-    global direction
-    global speed_level
-
-    require_winch_ready()
-
-    if direction == 1:
-        if speed_level < len(config.SPEED_LEVELS) - 1:
-            speed_level += 1
-
-        velocity = -config.SPEED_LEVELS[speed_level]
-        write_velocity(velocity)
-
-    elif direction == -1:
-        if speed_level > 0:
-            speed_level -= 1
-
-            velocity = config.SPEED_LEVELS[speed_level]
-            write_velocity(velocity)
-        else:
-            return execute_stop()
-
-    else:
-        direction = 1
-        speed_level = 0
-
-        velocity = -config.SPEED_LEVELS[speed_level]
-        write_velocity(velocity)
-
-    return get_motor_state()
+    """Deploy or reduce retraction speed; deployment can leave the retract limit."""
+    return _execute_direction(1)
 
 
 # ============================================================
@@ -944,6 +1123,7 @@ def ping_motor() -> dict:
 # INITIALIZE MOTOR
 # ============================================================
 
+@serialized_control
 def initialize_motor() -> dict:
     """Initialize both Dynamixels and leave the system safely locked."""
 
@@ -953,6 +1133,14 @@ def initialize_motor() -> dict:
     global initialized
     global torque_enabled
     global lock_state
+
+    global retract_limit_position, last_winch_position
+    global retract_limit_reached, retract_limit_fault, _retract_stop_pending
+
+    if current_velocity != 0 or _retract_stop_pending:
+        return {"success": False, "error": "Stop the winch before initializing"}
+    retract_limit_position = None
+    last_winch_position = None
 
     try:
         with bus_lock:
@@ -1032,6 +1220,32 @@ def initialize_motor() -> dict:
                     packet,
                 )
 
+                # Capture the signed multi-turn encoder reference after setup.
+                set_bus_baudrate(port, config.WINCH_BAUDRATE)
+                drive_mode, result, error = packet.read1ByteTxRx(
+                    port, config.WINCH_ID, config.ADDR_DRIVE_MODE
+                )
+                check_result(packet, result, error, "Read winch drive mode")
+                if drive_mode & 0x04:
+                    raise RuntimeError("Retract limit requires a velocity-based profile")
+                _retract_stopping_counts(0)  # Validate braking configuration.
+                reference, result, error = packet.read4ByteTxRx(
+                    port, config.WINCH_ID, config.ADDR_PRESENT_POSITION
+                )
+                check_result(packet, result, error, "Capture winch retract limit")
+                actual_velocity, result, error = packet.read4ByteTxRx(
+                    port, config.WINCH_ID, config.ADDR_PRESENT_VELOCITY
+                )
+                check_result(packet, result, error, "Check winch is stationary")
+                if signed_32(actual_velocity) != 0:
+                    raise RuntimeError("Winch must be stationary when setting the retract limit")
+                retract_limit_position = signed_32(reference)
+                last_winch_position = retract_limit_position
+                retract_limit_reached = True
+                retract_limit_fault = None
+                _retract_stop_pending = False
+                _start_retract_limit_monitor()
+
                 direction = 0
                 speed_level = 0
                 current_velocity = 0
@@ -1045,6 +1259,7 @@ def initialize_motor() -> dict:
                 port.closePort()
 
     except Exception as exc:
+        retract_limit_position = None
         initialized = False
         torque_enabled = False
         lock_state = "locked"
@@ -1060,6 +1275,7 @@ def initialize_motor() -> dict:
 # ENABLE TORQUE
 # ============================================================
 
+@serialized_control
 def enable_torque() -> dict:
     global torque_enabled
 
@@ -1068,6 +1284,8 @@ def enable_torque() -> dict:
             raise RuntimeError(
                 "Initialize the system before enabling torque"
             )
+
+        _require_limit_reference()
 
         with bus_lock:
             port = open_bus()
@@ -1112,6 +1330,7 @@ def enable_torque() -> dict:
 # DISABLE TORQUE
 # ============================================================
 
+@serialized_control
 def disable_torque() -> dict:
     """
     Stop and disable winch torque.
@@ -1125,6 +1344,8 @@ def disable_torque() -> dict:
     global current_velocity
     global torque_enabled
     global lock_state
+
+    global _retract_stop_pending
 
     try:
         if not initialized:
@@ -1198,6 +1419,7 @@ def disable_torque() -> dict:
             finally:
                 port.closePort()
 
+        _retract_stop_pending = False
         direction = 0
         speed_level = 0
         current_velocity = 0
@@ -1218,6 +1440,7 @@ def disable_torque() -> dict:
 # TOGGLE LOCK
 # ============================================================
 
+@serialized_control
 def toggle_lock() -> dict:
     try:
         if not initialized:

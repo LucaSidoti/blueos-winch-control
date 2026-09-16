@@ -655,6 +655,21 @@
             directionText.textContent = "Cable stationary";
         }
 
+        const retractLimit = data.retract_limit;
+        if (retractLimit?.fault) {
+            status.textContent = "SAFETY FAULT";
+            status.style.color = "#EF4444";
+            directionText.textContent = retractLimit.fault;
+        }
+        else if (retractLimit?.stopping && data.velocity === 0) {
+            status.textContent = "STOPPING";
+            directionText.textContent = "Waiting for winch to stop";
+        }
+        else if (retractLimit?.reached && data.status === "stopped") {
+            status.textContent = "RETRACT LIMIT";
+            directionText.textContent = "Further retraction blocked; deployment allowed when unlocked";
+        }
+
         rpm.textContent = `${data.rpm.toFixed(1)} RPM`;
         speedText.textContent =
             `Speed level: ${data.speed_level} / ${data.max_speed_level}`;
