@@ -11,3 +11,5 @@ dependencies = [
     "pymavlink",
 ]
 
+[tool.setuptools]
+py-modules = ["main", "config", "control", "mavlink_bridge"]
