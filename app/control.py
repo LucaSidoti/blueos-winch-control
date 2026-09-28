@@ -50,8 +50,10 @@ def write_velocity(velocity: int):
             retract_safety.record_fault(exc)
             retract_safety.stop(bus)
             raise
-        if velocity <= 0:
-            state.retract_limit.stopping = state.retract_limit.stopping or previous_velocity > 0
+        if velocity == 0:
+            # Keep feedback sampling until physical motion has actually stopped,
+            # in either direction, so the continuous HOME coordinate stays valid.
+            state.retract_limit.stopping = state.retract_limit.stopping or previous_velocity != 0
         if velocity != 0:
             state.retract_limit.reached = False
 

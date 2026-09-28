@@ -30,6 +30,7 @@ class RetractLimitState:
 @dataclass
 class DepthState:
     active: bool = False
+    mode: str = "idle"  # idle, depth, or home
     target_m: float | None = None
     phase: str = "idle"
     command_velocity: int = 0

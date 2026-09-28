@@ -144,3 +144,11 @@ STORAGE_SLOWDOWN_PAYOUT_M = 0.50
 STORAGE_CREEP_PAYOUT_M = 0.15
 STORAGE_SLOW_VELOCITY = 40
 STORAGE_CREEP_VELOCITY = 20
+
+# Dedicated return-to-storage profile. HOME itself is captured only by INITIALIZE.
+HOME_NORMAL_VELOCITY = 60
+HOME_TOLERANCE_M = 0.02
+
+# Position tracker sanity limit. The safety monitor samples during all motion,
+# so a larger jump indicates lost/invalid encoder tracking.
+ENCODER_MAX_DELTA_COUNTS = 600

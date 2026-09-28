@@ -44,6 +44,8 @@ def update_position(raw_position):
         state.retract_limit.last_position = raw
         return 0
     delta = encoder_delta(raw, previous)
+    if abs(delta) > config.ENCODER_MAX_DELTA_COUNTS:
+        raise RuntimeError(f'Implausible encoder jump: {delta} counts')
     # Positive motor rotation is RETRACT, negative rotation is DEPLOY.
     # Therefore payout grows when encoder motion is negative.
     state.retract_limit.deployed_counts -= delta
@@ -132,7 +134,9 @@ def check():
     """One monitor cycle, also callable in hardware-free regression tests."""
     if not state.initialized or not state.torque_enabled:
         return
-    if state.motion.velocity <= 0 and (not state.retract_limit.stopping):
+    # Keep sampling during BOTH deploy and retract so the continuous HOME-based
+    # coordinate cannot lose turns. Only the retract direction is limit-guarded.
+    if state.motion.velocity == 0 and (not state.retract_limit.stopping):
         return
     bus = None
     try:
@@ -144,15 +148,13 @@ def check():
                 raise RuntimeError('Retract reference is missing')
             if state.retract_limit.fault is not None:
                 stop(bus)
-            elif (
-                state.motion.velocity > 0
-                and state.retract_limit.reference - position
-                <= stopping_counts(max(state.motion.velocity, measured_velocity))
-            ):
-                state.retract_limit.reached = True
-                stop(bus)
+            elif state.motion.velocity > 0:
+                braking_distance = stopping_counts(max(state.motion.velocity, measured_velocity))
+                if state.retract_limit.deployed_counts <= braking_distance:
+                    state.retract_limit.reached = True
+                    stop(bus)
             # Goal velocity zero does not mean physical deceleration is finished.
-            if state.motion.velocity <= 0 and measured_velocity <= 0:
+            if state.motion.velocity == 0 and measured_velocity == 0:
                 state.retract_limit.stopping = False
         except Exception as exc:
             record_fault(exc)

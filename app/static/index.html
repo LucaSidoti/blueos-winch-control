@@ -264,6 +264,7 @@
         .depth-button { min-height:52px; font-size:14px; }
         .depth-go { background:#3B82F6; }
         .depth-cancel { background:#EF4444; }
+        .depth-home { background:#F59E0B; grid-column:1 / -1; }
         .depth-detail { margin-top:14px; color:#CBD5E1; line-height:1.6; }
         .depth-active { color:#22C55E; font-weight:bold; }
         .depth-idle { color:#94A3B8; font-weight:bold; }
@@ -425,6 +426,7 @@
                 <div class="depth-actions">
                     <button id="depth-go-button" class="depth-button depth-go" onclick="goToDepth()" disabled>GO TO DEPTH</button>
                     <button id="depth-cancel-button" class="depth-button depth-cancel" onclick="cancelDepth()" disabled>CANCEL</button>
+                    <button id="depth-home-button" class="depth-button depth-home" onclick="returnHome()" disabled>RETURN TO STORAGE</button>
                 </div>
             </div>
         </div>
@@ -432,7 +434,8 @@
             <div id="depth-control-state" class="depth-idle">● AUTOMATIC CONTROL IDLE</div>
             <div id="depth-control-detail">Initialize the winch to establish the depth reference.</div>
             <div id="depth-model-warning" class="depth-warning"></div>
-            <div class="depth-caption" style="margin-top:8px;">Target tolerance ±0.10 m • Configured maximum 200 m • Sensor offset 0.30 m above water</div>
+            <div id="home-reference" class="depth-caption" style="margin-top:8px;">Home: NOT SET</div>
+            <div class="depth-caption" style="margin-top:8px;">Target tolerance ±0.10 m • Configured maximum 200 m • Storage depth −0.30 m</div>
         </div>
     </div>
 
@@ -563,6 +566,8 @@
     const targetDepthInput = document.getElementById("target-depth-input");
     const depthGoButton = document.getElementById("depth-go-button");
     const depthCancelButton = document.getElementById("depth-cancel-button");
+    const depthHomeButton = document.getElementById("depth-home-button");
+    const homeReferenceElement = document.getElementById("home-reference");
     const depthControlState = document.getElementById("depth-control-state");
     const depthControlDetail = document.getElementById("depth-control-detail");
     const depthModelWarning = document.getElementById("depth-model-warning");
@@ -679,6 +684,7 @@
 
         depthGoButton.disabled = !motionEnabled || depthControlActive;
         depthCancelButton.disabled = !depthControlActive;
+        depthHomeButton.disabled = !motionEnabled || depthControlActive;
         targetDepthInput.disabled = depthControlActive;
     }
 
@@ -991,12 +997,19 @@
             depthLocationElement.textContent = data.above_water ? "ABOVE WATER" : "BELOW WATER";
             cablePayoutElement.textContent = `Cable payout: ${data.cable_payout_m.toFixed(2)} m`;
         }
+        homeReferenceElement.textContent = data.home_set ? "Home: SET AT INITIALIZATION • Storage depth: −0.30 m" : "Home: NOT SET";
         const phase = data.phase || "idle";
+        const mode = data.mode || "idle";
         if (depthControlActive) {
-            depthControlState.textContent = "● TARGET ACTIVE";
+            depthControlState.textContent = mode === "home" ? "● RETURNING TO STORAGE" : "● TARGET ACTIVE";
             depthControlState.className = "depth-active";
-            const remaining = data.error_m == null ? "--" : Math.abs(data.error_m).toFixed(2);
+            const remainingValue = mode === "home" ? data.home_remaining_m : (data.error_m == null ? null : Math.abs(data.error_m));
+            const remaining = remainingValue == null ? "--" : remainingValue.toFixed(2);
             depthControlDetail.textContent = `${phase.replaceAll("_", " ").toUpperCase()} • ${remaining} m remaining • Automatic speed: ${data.command_velocity}`;
+        } else if (phase === "home_reached") {
+            depthControlState.textContent = "● SENSOR STORED";
+            depthControlState.className = "depth-active";
+            depthControlDetail.textContent = "Stored HOME reached safely. HOME reference was not changed.";
         } else if (phase === "target_reached") {
             depthControlState.textContent = "● TARGET REACHED";
             depthControlState.className = "depth-active";
@@ -1010,7 +1023,7 @@
             depthControlState.className = "depth-idle";
             depthControlDetail.textContent = data.target_m == null ? "Enter a target depth after initialization, torque enable and unlock." : `Last target: ${data.target_m.toFixed(2)} m`;
         }
-        depthModelWarning.textContent = data.model_extrapolated ? "⚠ Spool model is extrapolating beyond the estimated 40 mm core region; calibrate before relying on this depth." : "";
+        depthModelWarning.textContent = "⚠ Depth currently uses a constant 152.5 mm effective spool diameter. Calibrate before long deployments.";
         updateSetupState();
     }
 
@@ -1032,6 +1045,15 @@
             if (!data.success) throw new Error(data.error || "Could not start depth control");
             updateDepthStatus(data);
         } catch (error) { showError(`Depth control error: ${error.message}`); }
+    }
+
+    async function returnHome() {
+        clearError();
+        try {
+            const data = await apiRequest("/depth/home", "POST");
+            if (!data.success) throw new Error(data.error || "Could not start return to storage");
+            updateDepthStatus(data);
+        } catch (error) { showError(`Home control error: ${error.message}`); }
     }
 
     async function cancelDepth() {

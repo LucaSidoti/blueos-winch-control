@@ -137,6 +137,14 @@ def set_depth_target(data: dict) -> dict:
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
+
+@post("/depth/home", sync_to_thread=True)
+def return_home() -> dict:
+    try:
+        return depth_control.go_home()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 @post("/depth/cancel", sync_to_thread=True)
 def cancel_depth_target() -> dict:
     try:
@@ -173,6 +181,7 @@ app = Litestar(
         command_deploy,
         depth_status,
         set_depth_target,
+        return_home,
         cancel_depth_target,
     ],
     static_files_config=[
