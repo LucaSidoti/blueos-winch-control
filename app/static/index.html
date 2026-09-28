@@ -435,7 +435,7 @@
             <div id="depth-control-detail">Initialize the winch to establish the depth reference.</div>
             <div id="depth-model-warning" class="depth-warning"></div>
             <div id="home-reference" class="depth-caption" style="margin-top:8px;">Home: NOT SET</div>
-            <div class="depth-caption" style="margin-top:8px;">Target tolerance ±0.10 m • Configured maximum 200 m • Storage depth −0.30 m</div>
+            <div class="depth-caption" style="margin-top:8px;">Target tolerance ±0.03 m • Configured maximum 200 m • Storage depth 0.00 m</div>
         </div>
     </div>
 
@@ -997,7 +997,9 @@
             depthLocationElement.textContent = data.above_water ? "ABOVE WATER" : "BELOW WATER";
             cablePayoutElement.textContent = `Cable payout: ${data.cable_payout_m.toFixed(2)} m`;
         }
-        homeReferenceElement.textContent = data.home_set ? "Home: SET AT INITIALIZATION • Storage depth: −0.30 m" : "Home: NOT SET";
+        homeReferenceElement.textContent = data.home_set
+    ? "Home: SET AT INITIALIZATION • Storage depth: 0.00 m"
+    : "Home: NOT SET";
         const phase = data.phase || "idle";
         const mode = data.mode || "idle";
         if (depthControlActive) {
@@ -1023,7 +1025,8 @@
             depthControlState.className = "depth-idle";
             depthControlDetail.textContent = data.target_m == null ? "Enter a target depth after initialization, torque enable and unlock." : `Last target: ${data.target_m.toFixed(2)} m`;
         }
-        depthModelWarning.textContent = "⚠ Depth currently uses a constant 152.5 mm effective spool diameter. Calibrate before long deployments.";
+        depthModelWarning.textContent =
+    "⚠ Depth currently uses a constant 150 mm spool diameter with 2:1 gear reduction. Calibrate before long deployments.";
         updateSetupState();
     }
 
