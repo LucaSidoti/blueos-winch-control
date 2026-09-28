@@ -6,6 +6,7 @@ from litestar import Litestar, get, post
 from litestar.static_files.config import StaticFilesConfig
 import config
 import control
+import depth_control
 from mavlink_bridge import mavlink_listener
 
 # ============================================================
@@ -88,6 +89,7 @@ def motor_state() -> dict:
 @post("/motor/stop", sync_to_thread=True)
 def stop_motor() -> dict:
     try:
+        depth_control.cancel(stop=False)
         return control.execute_stop()
     except Exception as exc:
         return {
@@ -98,6 +100,7 @@ def stop_motor() -> dict:
 @post("/motor/retract", sync_to_thread=True)
 def command_retract() -> dict:
     try:
+        depth_control.cancel(stop=False)
         return control.execute_retract()
     except Exception as exc:
         return {
@@ -108,12 +111,38 @@ def command_retract() -> dict:
 @post("/motor/deploy", sync_to_thread=True)
 def command_deploy() -> dict:
     try:
+        depth_control.cancel(stop=False)
         return control.execute_deploy()
     except Exception as exc:
         return {
             "success": False,
             "error": str(exc),
         }
+
+
+# ============================================================
+# AUTOMATIC DEPTH CONTROL
+# ============================================================
+
+@get("/depth", sync_to_thread=True)
+def depth_status() -> dict:
+    return depth_control.get_status(read_position=True)
+
+@post("/depth/target", sync_to_thread=True)
+def set_depth_target(data: dict) -> dict:
+    try:
+        if "depth_m" not in data:
+            raise ValueError("JSON body must contain depth_m")
+        return depth_control.set_target(data["depth_m"])
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/depth/cancel", sync_to_thread=True)
+def cancel_depth_target() -> dict:
+    try:
+        return depth_control.cancel(stop=True)
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 # ============================================================
 # START MAVLINK LISTENER
@@ -142,6 +171,9 @@ app = Litestar(
         stop_motor,
         command_retract,
         command_deploy,
+        depth_status,
+        set_depth_target,
+        cancel_depth_target,
     ],
     static_files_config=[
         StaticFilesConfig(

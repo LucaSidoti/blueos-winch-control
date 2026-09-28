@@ -3,6 +3,7 @@
 from pymavlink import mavutil
 import config
 import control
+import depth_control
 
 # ============================================================
 # MAVLINK HELPERS
@@ -103,6 +104,7 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    depth_control.cancel(stop=False)
                     result = control.execute_retract()
                     print(
                         f"Winch state: {result['status']}, "
@@ -121,6 +123,7 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    depth_control.cancel(stop=False)
                     control.execute_stop()
                     print(
                         "Winch stopped",
@@ -138,6 +141,7 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    depth_control.cancel(stop=False)
                     result = control.execute_deploy()
                     print(
                         f"Winch state: {result['status']}, "

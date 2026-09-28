@@ -254,6 +254,21 @@
         }
 
 
+
+        .depth-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:end; }
+        .depth-reading { font-size:38px; font-weight:bold; margin:6px 0; }
+        .depth-caption { color:#94A3B8; font-size:13px; font-weight:bold; }
+        .depth-input-row { display:flex; gap:8px; align-items:center; }
+        .depth-input { width:100%; background:#0F172A; color:#F8FAFC; border:1px solid #475569; border-radius:10px; padding:12px; font-size:22px; font-weight:bold; }
+        .depth-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
+        .depth-button { min-height:52px; font-size:14px; }
+        .depth-go { background:#3B82F6; }
+        .depth-cancel { background:#EF4444; }
+        .depth-detail { margin-top:14px; color:#CBD5E1; line-height:1.6; }
+        .depth-active { color:#22C55E; font-weight:bold; }
+        .depth-idle { color:#94A3B8; font-weight:bold; }
+        .depth-warning { color:#F59E0B; font-weight:bold; }
+
         .telemetry-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -284,26 +299,16 @@
         @media (max-width: 620px) {
             .controls,
             .setup-controls,
-            .telemetry-grid {
+            .telemetry-grid,
+            .depth-grid,
+            .depth-actions {
                 grid-template-columns: 1fr;
             }
 
-            .lock-toggle-button {
-                grid-column: auto;
-            }
-
-            .motion-button {
-                min-height: 95px;
-            }
-
-            .connection-row {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-
-            .secondary {
-                text-align: left;
-            }
+            .lock-toggle-button { grid-column: auto; }
+            .motion-button { min-height: 95px; }
+            .connection-row { flex-direction: column; align-items: flex-start; }
+            .secondary { text-align: left; }
         }
     </style>
 </head>
@@ -398,6 +403,36 @@
             <div class="speed-block">3</div>
             <div class="speed-block">4</div>
             <div class="speed-block">5</div>
+        </div>
+    </div>
+
+
+    <div class="panel">
+        <div class="setup-title">SENSOR DEPTH CONTROL</div>
+        <div class="depth-grid">
+            <div>
+                <div class="depth-caption">CURRENT DEPTH</div>
+                <div id="current-depth" class="depth-reading">-- m</div>
+                <div id="depth-location" class="depth-caption">DEPTH REFERENCE UNAVAILABLE</div>
+                <div id="cable-payout" class="depth-detail">Cable payout: -- m</div>
+            </div>
+            <div>
+                <div class="depth-caption">TARGET DEPTH</div>
+                <div class="depth-input-row">
+                    <input id="target-depth-input" class="depth-input" type="number" min="0" max="200" step="0.1" value="1.0">
+                    <strong>m</strong>
+                </div>
+                <div class="depth-actions">
+                    <button id="depth-go-button" class="depth-button depth-go" onclick="goToDepth()" disabled>GO TO DEPTH</button>
+                    <button id="depth-cancel-button" class="depth-button depth-cancel" onclick="cancelDepth()" disabled>CANCEL</button>
+                </div>
+            </div>
+        </div>
+        <div class="depth-detail">
+            <div id="depth-control-state" class="depth-idle">● AUTOMATIC CONTROL IDLE</div>
+            <div id="depth-control-detail">Initialize the winch to establish the depth reference.</div>
+            <div id="depth-model-warning" class="depth-warning"></div>
+            <div class="depth-caption" style="margin-top:8px;">Target tolerance ±0.10 m • Configured maximum 200 m • Sensor offset 0.30 m above water</div>
         </div>
     </div>
 
@@ -522,14 +557,30 @@
     const lockVoltageElement = document.getElementById("lock-voltage");
     const lockTemperatureElement = document.getElementById("lock-temperature");
 
+    const currentDepthElement = document.getElementById("current-depth");
+    const depthLocationElement = document.getElementById("depth-location");
+    const cablePayoutElement = document.getElementById("cable-payout");
+    const targetDepthInput = document.getElementById("target-depth-input");
+    const depthGoButton = document.getElementById("depth-go-button");
+    const depthCancelButton = document.getElementById("depth-cancel-button");
+    const depthControlState = document.getElementById("depth-control-state");
+    const depthControlDetail = document.getElementById("depth-control-detail");
+    const depthModelWarning = document.getElementById("depth-model-warning");
+    let depthControlActive = false;
+
     let motorConnected = false;
     let motorInitialized = false;
     let motorTorqueEnabled = false;
     let mechanicalLockState = "locked";
 
 
-    async function apiRequest(path, method = "GET") {
-        const response = await fetch(path, { method });
+    async function apiRequest(path, method = "GET", body = null) {
+        const options = { method };
+        if (body !== null) {
+            options.headers = { "Content-Type": "application/json" };
+            options.body = JSON.stringify(body);
+        }
+        const response = await fetch(path, options);
 
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
@@ -625,6 +676,10 @@
         stopButton.disabled =
             !motorConnected ||
             !motorInitialized;
+
+        depthGoButton.disabled = !motionEnabled || depthControlActive;
+        depthCancelButton.disabled = !depthControlActive;
+        targetDepthInput.disabled = depthControlActive;
     }
 
 
@@ -917,8 +972,87 @@
     }
 
 
+
+    function updateDepthStatus(data) {
+        if (!data || data.success !== true) {
+            currentDepthElement.textContent = "-- m";
+            cablePayoutElement.textContent = "Cable payout: -- m";
+            depthControlState.textContent = "● DEPTH STATUS UNAVAILABLE";
+            depthControlState.className = "depth-warning";
+            return;
+        }
+        depthControlActive = data.active === true;
+        if (data.depth_m === null || data.depth_m === undefined) {
+            currentDepthElement.textContent = "-- m";
+            depthLocationElement.textContent = "DEPTH REFERENCE UNAVAILABLE";
+            cablePayoutElement.textContent = "Cable payout: -- m";
+        } else {
+            currentDepthElement.textContent = `${data.depth_m.toFixed(2)} m`;
+            depthLocationElement.textContent = data.above_water ? "ABOVE WATER" : "BELOW WATER";
+            cablePayoutElement.textContent = `Cable payout: ${data.cable_payout_m.toFixed(2)} m`;
+        }
+        const phase = data.phase || "idle";
+        if (depthControlActive) {
+            depthControlState.textContent = "● TARGET ACTIVE";
+            depthControlState.className = "depth-active";
+            const remaining = data.error_m == null ? "--" : Math.abs(data.error_m).toFixed(2);
+            depthControlDetail.textContent = `${phase.replaceAll("_", " ").toUpperCase()} • ${remaining} m remaining • Automatic speed: ${data.command_velocity}`;
+        } else if (phase === "target_reached") {
+            depthControlState.textContent = "● TARGET REACHED";
+            depthControlState.className = "depth-active";
+            depthControlDetail.textContent = data.error_m == null ? "Winch stopped." : `Winch stopped • Error ${data.error_m.toFixed(2)} m`;
+        } else if (phase === "fault") {
+            depthControlState.textContent = "● DEPTH CONTROL FAULT";
+            depthControlState.className = "depth-warning";
+            depthControlDetail.textContent = data.last_error || "Automatic depth control stopped.";
+        } else {
+            depthControlState.textContent = "● AUTOMATIC CONTROL IDLE";
+            depthControlState.className = "depth-idle";
+            depthControlDetail.textContent = data.target_m == null ? "Enter a target depth after initialization, torque enable and unlock." : `Last target: ${data.target_m.toFixed(2)} m`;
+        }
+        depthModelWarning.textContent = data.model_extrapolated ? "⚠ Spool model is extrapolating beyond the estimated 40 mm core region; calibrate before relying on this depth." : "";
+        updateSetupState();
+    }
+
+    async function refreshDepth() {
+        if (!motorConnected) return;
+        try { updateDepthStatus(await apiRequest("/depth")); }
+        catch (error) { depthControlState.textContent = "● DEPTH STATUS UNAVAILABLE"; depthControlState.className = "depth-warning"; }
+    }
+
+    async function goToDepth() {
+        clearError();
+        const depth = Number(targetDepthInput.value);
+        if (!Number.isFinite(depth) || depth < 0 || depth > 200) {
+            showError("Target depth must be between 0 and 200 m.");
+            return;
+        }
+        try {
+            const data = await apiRequest("/depth/target", "POST", { depth_m: depth });
+            if (!data.success) throw new Error(data.error || "Could not start depth control");
+            updateDepthStatus(data);
+        } catch (error) { showError(`Depth control error: ${error.message}`); }
+    }
+
+    async function cancelDepth() {
+        clearError();
+        try {
+            const data = await apiRequest("/depth/cancel", "POST");
+            if (!data.success) throw new Error(data.error || "Could not cancel depth control");
+            updateDepthStatus(data);
+            await refreshState();
+        } catch (error) { showError(`Depth cancel error: ${error.message}`); }
+    }
+
+    targetDepthInput.addEventListener("keydown", event => {
+        if (event.key === "Enter" && !depthGoButton.disabled) { event.preventDefault(); goToDepth(); }
+    });
+
     document.addEventListener("keydown", event => {
         if (event.repeat) {
+            return;
+        }
+        if (event.target === targetDepthInput) {
             return;
         }
 
@@ -950,10 +1084,12 @@
         await checkConnection();
         await refreshState();
         await refreshTelemetry();
+        await refreshDepth();
     }
 
     initializeInterface();
     setInterval(refreshTelemetry, 1000);
+    setInterval(refreshDepth, 500);
     setInterval(refreshState, 1000);
     setInterval(checkConnection, 3000);
 </script>

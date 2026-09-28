@@ -26,6 +26,14 @@ class RetractLimitState:
     stopping: bool = False
 
 @dataclass
+class DepthState:
+    active: bool = False
+    target_m: float | None = None
+    phase: str = "idle"
+    command_velocity: int = 0
+    last_error: str | None = None
+
+@dataclass
 class ApplicationState:
     initialized: bool = False
     torque_enabled: bool = False
@@ -33,6 +41,7 @@ class ApplicationState:
     motion: MotionState = field(default_factory=MotionState)
     unlock: UnlockDiagnostics = field(default_factory=UnlockDiagnostics)
     retract_limit: RetractLimitState = field(default_factory=RetractLimitState)
+    depth: DepthState = field(default_factory=DepthState)
     bus_lock: object = field(default_factory=RLock, repr=False)
 
 state = ApplicationState()

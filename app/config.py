@@ -110,3 +110,37 @@ PWM_RETRACT = 1100
 PWM_STOP = 1300
 PWM_IDLE = 1500
 PWM_DEPLOY = 1900
+
+# ============================================================
+# DEPTH CONTROL / SPOOL MODEL (PRELIMINARY - CALIBRATE ON BOAT)
+# ============================================================
+
+# Measured/estimated geometry. The full-spool diameter is the most trusted
+# measurement and is used as the encoder-zero effective winding diameter.
+SPOOL_FULL_DIAMETER_M = 0.1525   # midpoint of measured 150-155 mm
+SPOOL_CORE_DIAMETER_M = 0.040    # approximate; used as a model floor only
+SPOOL_USABLE_WIDTH_M = 0.070
+CABLE_DIAMETER_M = 0.003
+CABLE_NOMINAL_LENGTH_M = 200.0   # inventory value; geometry does not currently validate all 200 m
+
+# Sensor is 0.30 m above the water when the retract reference is captured.
+SENSOR_HEIGHT_ABOVE_WATER_M = 0.30
+MAX_TARGET_DEPTH_M = 200.0
+DEPTH_TOLERANCE_M = 0.10
+DEPTH_CONTROL_POLL_INTERVAL = 0.10
+
+# Automatic speed schedule: (distance-to-target threshold in metres, velocity).
+# First matching threshold is used, from near to far.
+DEPTH_SPEED_PROFILE = [
+    (0.25, 20),
+    (0.75, 40),
+    (2.00, 60),
+    (5.00, 80),
+    (float('inf'), 100),
+]
+
+# Final retract/storage approach. These limits override the normal target speed.
+STORAGE_SLOWDOWN_PAYOUT_M = 0.50
+STORAGE_CREEP_PAYOUT_M = 0.15
+STORAGE_SLOW_VELOCITY = 40
+STORAGE_CREEP_VELOCITY = 20
