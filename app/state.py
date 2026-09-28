@@ -24,6 +24,8 @@ class RetractLimitState:
     reached: bool = False
     fault: str | None = None
     stopping: bool = False
+    raw_position: int | None = None  # Last raw single-turn encoder sample.
+    deployed_counts: int = 0         # Continuous payout coordinate; 0 = stored.
 
 @dataclass
 class DepthState:

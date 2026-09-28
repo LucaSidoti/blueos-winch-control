@@ -127,12 +127,7 @@ def relieve_pawl_load():
         motion_started = False
         try:
             bus.set_baudrate(config.WINCH_BAUDRATE)
-            start_position = bus.read_position(config.WINCH_ID, action='Read winch start position')
-            relief_ceiling = state.retract_limit.reference + config.UNLOCK_RELIEF_COUNTS
-            if signed_32(start_position) + config.UNLOCK_RELIEF_COUNTS > relief_ceiling:
-                raise RuntimeError(
-                    'Unlock relief would exceed its allowance beyond the retract limit',
-                )
+            start_position = int(bus.read_position(config.WINCH_ID, action='Read winch start position')) % config.WINCH_COUNTS_PER_REV
             command = config.UNLOCK_RELIEF_VELOCITY
             # An unacknowledged command may still have started the motor.
             motion_started = True
@@ -145,9 +140,8 @@ def relieve_pawl_load():
             deadline = time.monotonic() + config.UNLOCK_RELIEF_TIMEOUT
             while True:
                 position = bus.read_position(config.WINCH_ID, action='Read winch relief position')
-                start_position_signed = signed_32(start_position)
-                position_signed = signed_32(position)
-                movement = position_signed - start_position_signed
+                position_raw = int(position) % config.WINCH_COUNTS_PER_REV
+                movement = retract_safety.encoder_delta(position_raw, start_position)
                 if movement >= config.UNLOCK_RELIEF_COUNTS:
                     break
                 if time.monotonic() >= deadline:
@@ -368,6 +362,8 @@ def initialize_motor() -> dict:
         return {'success': False, 'error': 'Stop the winch before initializing'}
     state.retract_limit.reference = None
     state.retract_limit.last_position = None
+    state.retract_limit.raw_position = None
+    state.retract_limit.deployed_counts = 0
     try:
         with motor_bus.session(state.bus_lock) as bus:
             _configure_winch(bus)

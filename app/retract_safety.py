@@ -18,15 +18,49 @@ _shutdown = Event()
 logger = logging.getLogger(__name__)
 
 
+def encoder_delta(new_raw, old_raw):
+    """Shortest signed delta for the XW540 single-turn 0..4095 position.
+
+    In velocity mode Present Position wraps once per revolution.  At our maximum
+    configured speed and polling rate the motor cannot move half a revolution
+    between samples, so the shortest modular delta is unambiguous.
+    """
+    counts = config.WINCH_COUNTS_PER_REV
+    delta = int(new_raw) - int(old_raw)
+    half = counts // 2
+    if delta > half:
+        delta -= counts
+    elif delta < -half:
+        delta += counts
+    return delta
+
+
+def update_position(raw_position):
+    """Update continuous cable payout from one raw encoder sample."""
+    raw = int(raw_position) % config.WINCH_COUNTS_PER_REV
+    previous = state.retract_limit.raw_position
+    if previous is None:
+        state.retract_limit.raw_position = raw
+        state.retract_limit.last_position = raw
+        return 0
+    delta = encoder_delta(raw, previous)
+    # Positive motor rotation is RETRACT, negative rotation is DEPLOY.
+    # Therefore payout grows when encoder motion is negative.
+    state.retract_limit.deployed_counts -= delta
+    state.retract_limit.raw_position = raw
+    state.retract_limit.last_position = raw
+    return delta
+
+
 def read_feedback(bus):
-    """Read unrounded, signed multi-turn position and actual velocity."""
+    """Read feedback and maintain a continuous payout coordinate."""
     position = bus.read_position(config.WINCH_ID, action='Read winch limit position')
     velocity = bus.read_velocity(config.WINCH_ID, action='Read winch limit velocity')
     if state.torque_enabled:
         torque = bus.read_torque(config.WINCH_ID, action='Read winch torque status')
         if torque != config.TORQUE_ENABLE:
             raise RuntimeError('Winch torque was lost; initialize again before moving')
-    state.retract_limit.last_position = signed_32(position)
+    update_position(position)
     return (state.retract_limit.last_position, signed_32(velocity))
 
 
@@ -157,7 +191,7 @@ def validate_retraction(bus, velocity):
         record_fault(exc)
         stop(bus)
         raise
-    if state.retract_limit.reference - position <= braking_distance:
+    if state.retract_limit.deployed_counts <= braking_distance:
         state.retract_limit.reached = True
         stop(bus)
         raise RuntimeError('Retract limit reached (including braking allowance)')
@@ -174,8 +208,11 @@ def capture_reference(bus):
     actual_velocity = bus.read_velocity(config.WINCH_ID, action='Check winch is stationary')
     if signed_32(actual_velocity) != 0:
         raise RuntimeError('Winch must be stationary when setting the retract limit')
-    state.retract_limit.reference = signed_32(reference)
-    state.retract_limit.last_position = state.retract_limit.reference
+    raw_reference = int(reference) % config.WINCH_COUNTS_PER_REV
+    state.retract_limit.reference = raw_reference
+    state.retract_limit.raw_position = raw_reference
+    state.retract_limit.last_position = raw_reference
+    state.retract_limit.deployed_counts = 0
     state.retract_limit.reached = True
     state.retract_limit.fault = None
     state.retract_limit.stopping = False
