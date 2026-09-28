@@ -88,6 +88,9 @@ UNLOCK_VERIFY_POLL_INTERVAL = 0.05
 # The ratchet has 24 teeth -> 15 degrees per ratchet tooth.
 # With the 2:1 reduction, 6 motor degrees = 3 ratchet degrees.
 WINCH_COUNTS_PER_REV = 4096
+# Motor-to-spool gear reduction.
+# 2 motor revolutions = 1 spool revolution.
+WINCH_GEAR_RATIO = 2.0
 UNLOCK_RELIEF_MOTOR_DEG = 6.0
 UNLOCK_RELIEF_COUNTS = round(
     WINCH_COUNTS_PER_REV * UNLOCK_RELIEF_MOTOR_DEG / 360.0
@@ -117,16 +120,16 @@ PWM_DEPLOY = 1900
 
 # Measured/estimated geometry. The full-spool diameter is the most trusted
 # measurement and is used as the encoder-zero effective winding diameter.
-SPOOL_FULL_DIAMETER_M = 0.1525   # midpoint of measured 150-155 mm
-SPOOL_CORE_DIAMETER_M = 0.040    # approximate; used as a model floor only
+SPOOL_FULL_DIAMETER_M = 0.15  
+SPOOL_CORE_DIAMETER_M = 0.040   
 SPOOL_USABLE_WIDTH_M = 0.070
 CABLE_DIAMETER_M = 0.003
-CABLE_NOMINAL_LENGTH_M = 200.0   # inventory value; geometry does not currently validate all 200 m
+CABLE_NOMINAL_LENGTH_M = 200.0   
 
-# Sensor is 0.30 m above the water when the retract reference is captured.
-SENSOR_HEIGHT_ABOVE_WATER_M = 0.30
+# Sensor is TODO m above the water when the retract reference is captured.
+SENSOR_HEIGHT_ABOVE_WATER_M = 0.0
 MAX_TARGET_DEPTH_M = 200.0
-DEPTH_TOLERANCE_M = 0.10
+DEPTH_TOLERANCE_M = 0.03
 DEPTH_CONTROL_POLL_INTERVAL = 0.10
 
 # Automatic speed schedule: (distance-to-target threshold in metres, velocity).

@@ -21,14 +21,29 @@ _generation = 0
 
 
 def payout_from_counts(deployed_counts):
-    """First-test conversion using the measured full-spool diameter.
+    """Convert motor encoder counts to cable payout.
 
-    This constant-radius model is intentionally simple and should be calibrated
-    with measured payout before long deployments.
+    The XW540 encoder measures motor revolutions. The spool is driven through
+    a 2:1 reduction, so two motor revolutions correspond to one spool revolution.
+
+    A constant full-spool diameter is used for now. This can later be replaced
+    by a variable-radius spool model after calibration.
     """
-    revolutions = float(deployed_counts) / config.WINCH_COUNTS_PER_REV
-    payout = revolutions * math.pi * config.SPOOL_FULL_DIAMETER_M
-    return payout, revolutions
+    motor_revolutions = (
+        float(deployed_counts) / config.WINCH_COUNTS_PER_REV
+    )
+
+    spool_revolutions = (
+        motor_revolutions / config.WINCH_GEAR_RATIO
+    )
+
+    payout = (
+        spool_revolutions
+        * math.pi
+        * config.SPOOL_FULL_DIAMETER_M
+    )
+
+    return payout, spool_revolutions
 
 
 def _sample():
