@@ -118,6 +118,29 @@ def record_fault(exc):
     state.retract_limit.stopping = True
 
 
+def fault_is_recoverable():
+    """Return True only for a Dynamixel torque-loss/shutdown fault.
+
+    Encoder/position-integrity and communication faults remain latched and require
+    normal reinitialization because HOME may no longer be trustworthy.
+    """
+    fault = state.retract_limit.fault
+    return bool(fault and fault.startswith('Winch torque was lost'))
+
+
+def clear_recoverable_fault():
+    """Clear only a recoverable torque-loss fault, preserving HOME tracking."""
+    if state.retract_limit.fault is None:
+        raise RuntimeError('No retract safety fault is active')
+    if not fault_is_recoverable():
+        raise RuntimeError(
+            'This safety fault cannot be reset remotely; reinitialize the winch',
+        )
+    state.retract_limit.fault = None
+    state.retract_limit.stopping = False
+    state.retract_limit.reached = False
+
+
 def require_reference():
     if not state.initialized or state.retract_limit.reference is None:
         raise RuntimeError('Initialize the system to establish the retract limit')

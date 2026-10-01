@@ -83,6 +83,7 @@ def get_motor_state() -> dict:
             'last_position_counts': state.retract_limit.last_position,
             'reached': state.retract_limit.reached,
             'fault': state.retract_limit.fault,
+            'fault_recoverable': retract_safety.fault_is_recoverable(),
             'stopping': state.retract_limit.stopping,
             'unlock_allowance_deg': config.UNLOCK_RELIEF_MOTOR_DEG,
         },
@@ -383,6 +384,63 @@ def initialize_motor() -> dict:
         state.initialized = False
         state.torque_enabled = False
         state.lock_state = 'locked'
+        return {'success': False, 'error': str(exc)}
+
+
+@serialized_control
+def reset_safety_fault() -> dict:
+    """Recover remotely from a Dynamixel torque-loss/shutdown fault.
+
+    HOME is preserved only if the encoder remains consistent across the reboot.
+    Other safety faults still require a normal reinitialization.
+    """
+    try:
+        if not state.initialized or state.retract_limit.reference is None:
+            raise RuntimeError('System is not initialized')
+        if not retract_safety.fault_is_recoverable():
+            raise RuntimeError(
+                'Safety fault is not remotely recoverable; reinitialize the winch',
+            )
+
+        # Automatic motion must not restart after recovery.
+        state.depth.active = False
+        state.depth.mode = 'idle'
+        state.depth.command_velocity = 0
+        state.motion.direction = 0
+        state.motion.speed_level = 0
+        state.motion.velocity = 0
+        state.torque_enabled = False
+
+        with motor_bus.session(state.bus_lock) as bus:
+            bus.set_baudrate(config.WINCH_BAUDRATE)
+
+            # A Dynamixel hardware shutdown normally requires a REBOOT instruction
+            # before Torque Enable can be set again.
+            result, error = bus.packet.reboot(bus.port, config.WINCH_ID)
+            bus._check(result, error, 'Reboot winch motor')
+            time.sleep(0.5)
+
+            bus.set_baudrate(config.WINCH_BAUDRATE)
+            position = bus.read_position(
+                config.WINCH_ID, action='Read winch position after safety reset',
+            )
+            # Preserve HOME only if the encoder is still consistent.
+            retract_safety.update_position(position)
+
+            bus.set_velocity(config.WINCH_ID, 0, action='Set winch zero velocity after reboot')
+            bus.set_torque(
+                config.WINCH_ID,
+                config.TORQUE_ENABLE,
+                action='Re-enable winch torque after safety reset',
+            )
+
+        retract_safety.clear_recoverable_fault()
+        state.torque_enabled = True
+        state.depth.phase = 'idle'
+        state.depth.last_error = None
+        return get_motor_state()
+    except Exception as exc:
+        state.torque_enabled = False
         return {'success': False, 'error': str(exc)}
 
 

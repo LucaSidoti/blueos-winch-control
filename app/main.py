@@ -53,6 +53,14 @@ def enable_torque() -> dict:
     return control.enable_torque()
 
 # ============================================================
+# SAFETY FAULT RESET
+# ============================================================
+
+@post("/motor/safety/reset", sync_to_thread=True)
+def reset_safety_fault() -> dict:
+    return control.reset_safety_fault()
+
+# ============================================================
 # TORQUE DISABLE
 # ============================================================
 
@@ -172,6 +180,7 @@ app = Litestar(
         ping_motor,
         initialize_motor,
         enable_torque,
+        reset_safety_fault,
         disable_torque,
         toggle_lock,
         motor_state,
