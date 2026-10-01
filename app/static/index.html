@@ -200,6 +200,7 @@
             display: grid;
             grid-template-columns: 1fr 0.8fr 1fr;
             gap: 14px;
+            margin-bottom: 18px;
         }
 
         button {
@@ -260,23 +261,132 @@
 
 
 
-        .depth-grid { display:grid; grid-template-columns:1fr 1fr; gap:32px; align-items:start; }
-        .depth-side { min-width:0; }
-        .depth-reading { font-size:42px; font-weight:bold; margin:8px 0 5px; }
-        .depth-caption { color:#94A3B8; font-size:13px; font-weight:bold; }
-        .depth-input-row { display:flex; gap:10px; align-items:center; margin-top:8px; }
-        .depth-input { width:100%; background:#0F172A; color:#F8FAFC; border:1px solid #475569; border-radius:10px; padding:12px; font-size:22px; font-weight:bold; }
-        .depth-button { min-height:50px; font-size:14px; }
-        .depth-main-action { width:100%; margin-top:10px; }
-        .depth-go { background:#3B82F6; }
-        .depth-home { background:#F59E0B; color:#0F172A; }
-        .depth-cancel { background:#EF4444; }
-        .depth-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
-        .depth-status-box { min-height:42px; margin-top:20px; padding-top:15px; border-top:1px solid rgba(148,163,184,0.15); }
-        .depth-status-detail { color:#94A3B8; font-size:13px; margin-top:5px; min-height:16px; }
-        .depth-active { color:#22C55E; font-weight:bold; }
-        .depth-idle { color:#94A3B8; font-weight:bold; }
-        .depth-warning { color:#F59E0B; font-weight:bold; font-size:13px; margin-top:6px; }
+        /* Depth controller: compact, conflict-free layout */
+        .depth-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .depth-header .setup-title {
+            margin: 0;
+        }
+
+        .depth-status-inline {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .depth-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 28px;
+            align-items: end;
+        }
+
+        .depth-side { min-width: 0; }
+
+        .depth-caption {
+            color: #94A3B8;
+            font-size: 13px;
+            font-weight: bold;
+        }
+
+        .depth-reading {
+            margin: 9px 0 7px;
+            font-size: 42px;
+            line-height: 1;
+            font-weight: bold;
+        }
+
+        .depth-location { min-height: 16px; }
+
+        .depth-input-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 8px;
+        }
+
+        .depth-input {
+            width: 100%;
+            min-width: 0;
+            padding: 12px;
+            border: 1px solid #475569;
+            border-radius: 10px;
+            background: #0F172A;
+            color: #F8FAFC;
+            font-size: 22px;
+            font-weight: bold;
+        }
+
+        .depth-button {
+            min-height: 48px;
+            font-size: 14px;
+        }
+
+        .depth-main-action {
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .depth-go { background: #3B82F6; }
+        .depth-home { background: #F59E0B; color: #0F172A; }
+        .depth-cancel { background: #EF4444; }
+
+        .depth-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 18px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(148,163,184,0.14);
+        }
+
+        .depth-active,
+        .depth-idle,
+        .depth-warning {
+            display: inline-flex;
+            align-items: center;
+            min-height: 26px;
+            padding: 4px 9px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: bold;
+            white-space: nowrap;
+        }
+
+        .depth-active { color: #22C55E; background: rgba(34,197,94,0.10); }
+        .depth-idle { color: #CBD5E1; background: rgba(148,163,184,0.10); }
+        .depth-warning { color: #F59E0B; background: rgba(245,158,11,0.10); }
+
+        .depth-status-detail {
+            color: #94A3B8;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        /* Empty dynamic messages must occupy no space and have no pill background. */
+        #depth-control-detail:empty,
+        #depth-model-warning:empty {
+            display: none;
+        }
+
+        #depth-model-warning:not(:empty) {
+            display: block;
+            margin-top: 12px;
+            padding: 9px 11px;
+            border-radius: 8px;
+            color: #F59E0B;
+            background: rgba(245,158,11,0.08);
+            font-size: 12px;
+            font-weight: bold;
+        }
 
         .telemetry-grid {
             display: grid;
@@ -305,6 +415,25 @@
         .telemetry-row span { color: #94A3B8; }
         .telemetry-row strong { text-align: right; white-space: nowrap; }
 
+        /* Telemetry markup uses name/value pairs. Keep them aligned in two columns. */
+        .telemetry-values {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            column-gap: 20px;
+            align-items: center;
+        }
+
+        .telemetry-name,
+        .telemetry-value {
+            padding: 9px 0;
+            border-bottom: 1px solid rgba(148,163,184,0.12);
+        }
+
+        .telemetry-name { color: #94A3B8; }
+        .telemetry-value { font-weight: bold; text-align: right; white-space: nowrap; }
+
+        .telemetry-values > :nth-last-child(-n+2) { border-bottom: none; }
+
         @media (max-width: 620px) {
             .controls,
             .setup-controls,
@@ -318,6 +447,9 @@
             .motion-button { min-height: 95px; }
             .connection-row { flex-direction: column; align-items: flex-start; }
             .secondary { text-align: left; }
+            .depth-header { align-items: flex-start; }
+            .depth-status-inline { flex-wrap: wrap; }
+            .depth-actions { margin-top: 14px; padding-top: 14px; }
         }
     </style>
 </head>
@@ -427,13 +559,19 @@
 
 
     <div class="panel">
-        <div class="setup-title">SENSOR DEPTH CONTROL</div>
+        <div class="depth-header">
+            <div class="setup-title">SENSOR DEPTH CONTROL</div>
+            <div class="depth-status-inline">
+                <div id="depth-control-state" class="depth-idle">● IDLE</div>
+                <div id="depth-control-detail" class="depth-status-detail"></div>
+            </div>
+        </div>
 
         <div class="depth-grid">
             <div class="depth-side">
                 <div class="depth-caption">CURRENT DEPTH</div>
                 <div id="current-depth" class="depth-reading">-- m</div>
-                <div id="depth-location" class="depth-caption">DEPTH REFERENCE UNAVAILABLE</div>
+                <div id="depth-location" class="depth-caption depth-location">DEPTH REFERENCE UNAVAILABLE</div>
             </div>
 
             <div class="depth-side">
@@ -446,17 +584,46 @@
             </div>
         </div>
 
-        <div class="depth-status-box">
-            <div id="depth-control-state" class="depth-idle">● IDLE</div>
-            <div id="depth-control-detail" class="depth-status-detail"></div>
-            <div id="depth-model-warning" class="depth-warning"></div>
-        </div>
+        <div id="depth-model-warning"></div>
 
         <div class="depth-actions">
             <button id="depth-home-button" class="depth-button depth-home" onclick="returnHome()" disabled>RETURN TO STORAGE</button>
             <button id="depth-cancel-button" class="depth-button depth-cancel" onclick="cancelDepth()" disabled>CANCEL</button>
         </div>
     </div>
+
+    <div class="controls">
+        <button
+            id="retract-button"
+            class="motion-button retract"
+            onclick="sendMotionCommand('retract')"
+            disabled
+        >
+            <span class="button-symbol">▲</span>
+            RETRACT / FASTER
+        </button>
+
+        <button
+            id="stop-button"
+            class="motion-button stop"
+            onclick="sendMotionCommand('stop')"
+            disabled
+        >
+            <span class="button-symbol">■</span>
+            STOP
+        </button>
+
+        <button
+            id="deploy-button"
+            class="motion-button deploy"
+            onclick="sendMotionCommand('deploy')"
+            disabled
+        >
+            <span class="button-symbol">▼</span>
+            DEPLOY / FASTER
+        </button>
+    </div>
+
 
     <div class="panel">
         <div class="setup-title">LIVE MOTOR TELEMETRY</div>
@@ -502,38 +669,6 @@
                 </div>
             </div>
         </div>
-    </div>
-
-    <div class="controls">
-        <button
-            id="retract-button"
-            class="motion-button retract"
-            onclick="sendMotionCommand('retract')"
-            disabled
-        >
-            <span class="button-symbol">▲</span>
-            RETRACT / FASTER
-        </button>
-
-        <button
-            id="stop-button"
-            class="motion-button stop"
-            onclick="sendMotionCommand('stop')"
-            disabled
-        >
-            <span class="button-symbol">■</span>
-            STOP
-        </button>
-
-        <button
-            id="deploy-button"
-            class="motion-button deploy"
-            onclick="sendMotionCommand('deploy')"
-            disabled
-        >
-            <span class="button-symbol">▼</span>
-            DEPLOY / FASTER
-        </button>
     </div>
 
     <div id="error" class="error"></div>

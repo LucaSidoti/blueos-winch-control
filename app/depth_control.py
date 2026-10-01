@@ -97,6 +97,7 @@ def get_status(read_position=True):
         'sensor_offset_m': config.SENSOR_HEIGHT_ABOVE_WATER_M,
         'tolerance_m': config.DEPTH_TOLERANCE_M,
         'max_target_depth_m': config.MAX_TARGET_DEPTH_M,
+        'model_extrapolated': False,
     }
 
 
