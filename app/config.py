@@ -144,7 +144,7 @@ DEPTH_SPEED_PROFILE = [
 
 # Final retract/storage approach. These limits override the normal target speed.
 STORAGE_SLOWDOWN_PAYOUT_M = 0.50
-STORAGE_CREEP_PAYOUT_M = 0.15
+STORAGE_CREEP_PAYOUT_M = 0.30
 STORAGE_SLOW_VELOCITY = 40
 STORAGE_CREEP_VELOCITY = 20
 
