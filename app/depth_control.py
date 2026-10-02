@@ -98,6 +98,8 @@ def get_status(read_position=True):
         'tolerance_m': config.DEPTH_TOLERANCE_M,
         'max_target_depth_m': config.MAX_TARGET_DEPTH_M,
         'model_extrapolated': False,
+        'feedback_trustworthy': state.retract_limit.fault is None,
+        'safety_fault': state.retract_limit.fault,
     }
 
 

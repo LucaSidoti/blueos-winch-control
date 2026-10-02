@@ -732,6 +732,7 @@
     let mechanicalLockState = "locked";
     let safetyFault = null;
     let safetyFaultRecoverable = false;
+    let winchHardwareError = false;
 
 
     async function apiRequest(path, method = "GET", body = null) {
@@ -824,8 +825,12 @@
             mechanicalLockState === "unlocking" ||
             unlockingRequiresTorque;
 
-        safetyResetButton.style.display = safetyFaultRecoverable ? "block" : "none";
-        safetyResetButton.disabled = !motorConnected || !safetyFaultRecoverable;
+        const recoveryAvailable = safetyFaultRecoverable || winchHardwareError;
+        safetyResetButton.style.display = recoveryAvailable ? "block" : "none";
+        safetyResetButton.textContent = winchHardwareError && !safetyFaultRecoverable
+            ? "RECOVER WINCH HARDWARE"
+            : "RESET SAFETY FAULT";
+        safetyResetButton.disabled = !motorConnected || !recoveryAvailable;
 
         const motionEnabled =
             motorConnected &&
@@ -889,11 +894,14 @@
             directionText.textContent = "Further retraction blocked; deployment allowed when unlocked";
         }
 
-        rpm.textContent = `${data.rpm.toFixed(1)} RPM`;
+        const faulted = Boolean(retractLimit?.fault);
+        const displayedRpm = faulted ? 0 : data.rpm;
+        const displayedSpeedLevel = faulted ? 0 : data.speed_level;
+        rpm.textContent = `${displayedRpm.toFixed(1)} RPM`;
         speedText.textContent =
-            `Speed level: ${data.speed_level} / ${data.max_speed_level}`;
+            `Speed level: ${displayedSpeedLevel} / ${data.max_speed_level}`;
 
-        for (let i = 0; i < data.speed_level; i++) {
+        for (let i = 0; i < displayedSpeedLevel; i++) {
             if (data.status === "retracting") {
                 speedBlocks[i].style.background = "#22C55E";
             }
@@ -990,6 +998,7 @@
         try {
             const data = await apiRequest("/motor/ping");
             motorConnected = data.connected === true;
+            winchHardwareError = data.winch_hardware_error === true;
 
             if (motorConnected) {
                 connectionElement.textContent = "● CONNECTED";
@@ -1001,6 +1010,7 @@
         }
         catch (error) {
             motorConnected = false;
+            winchHardwareError = false;
             connectionElement.textContent = "● DISCONNECTED";
             connectionElement.className = "disconnected";
         }
@@ -1093,7 +1103,10 @@
         clearError();
         safetyResetButton.disabled = true;
         try {
-            const data = await apiRequest("/motor/safety/reset", "POST");
+            const endpoint = winchHardwareError && !safetyFaultRecoverable
+                ? "/motor/hardware/recover"
+                : "/motor/safety/reset";
+            const data = await apiRequest(endpoint, "POST");
             if (!data.success) {
                 throw new Error(data.error || "Safety fault reset failed");
             }
@@ -1172,6 +1185,9 @@
         if (data.depth_m === null || data.depth_m === undefined) {
             currentDepthElement.textContent = "-- m";
             depthLocationElement.textContent = "DEPTH REFERENCE UNAVAILABLE";
+        } else if (data.feedback_trustworthy === false) {
+            currentDepthElement.textContent = `${data.depth_m.toFixed(2)} m`;
+            depthLocationElement.textContent = "LAST KNOWN DEPTH — FEEDBACK NOT TRUSTED";
         } else {
             currentDepthElement.textContent = `${data.depth_m.toFixed(2)} m`;
             depthLocationElement.textContent = data.above_water ? "ABOVE WATER" : "BELOW WATER";

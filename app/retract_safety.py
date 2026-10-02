@@ -111,21 +111,35 @@ def stop(bus):
 
 
 def record_fault(exc):
+    """Latch the first safety fault and make commanded motion state conservative.
+
+    A secondary failure while trying to stop must not overwrite the original cause.
+    """
     message = str(exc)
-    if state.retract_limit.fault != message:
+    if state.retract_limit.fault is None:
         logger.error('Retract safety fault: %s', message)
-    state.retract_limit.fault = message
+        state.retract_limit.fault = message
+    elif state.retract_limit.fault != message:
+        logger.error('Additional retract safety error: %s', message)
     state.retract_limit.stopping = True
+    # Once feedback/control is faulted, the last command is not trustworthy.
+    state.motion.velocity = 0
+    state.motion.direction = 0
+    state.motion.speed_level = 0
 
 
 def fault_is_recoverable():
-    """Return True only for a Dynamixel torque-loss/shutdown fault.
+    """Return True for faults that indicate a responding Dynamixel shutdown.
 
-    Encoder/position-integrity and communication faults remain latched and require
-    normal reinitialization because HOME may no longer be trustworthy.
+    These cases can be rebooted and HOME preserved only after the encoder is checked
+    for continuity. Communication loss and encoder-integrity faults remain latched
+    and require normal reinitialization.
     """
-    fault = state.retract_limit.fault
-    return bool(fault and fault.startswith('Winch torque was lost'))
+    fault = state.retract_limit.fault or ''
+    return (
+        fault.startswith('Winch torque was lost')
+        or ('[RxPacketError]' in fault and 'Hardware error occurred' in fault)
+    )
 
 
 def clear_recoverable_fault():
@@ -181,7 +195,10 @@ def check():
                 state.retract_limit.stopping = False
         except Exception as exc:
             record_fault(exc)
-            stop(bus)
+            try:
+                stop(bus)
+            except Exception as stop_exc:
+                record_fault(stop_exc)
     except Exception as exc:
         record_fault(exc)
     finally:
@@ -214,7 +231,10 @@ def validate_retraction(bus, velocity):
         braking_distance = stopping_counts(max(velocity, state.motion.velocity, measured_velocity))
     except Exception as exc:
         record_fault(exc)
-        stop(bus)
+        try:
+            stop(bus)
+        except Exception as stop_exc:
+            record_fault(stop_exc)
         raise
     if state.retract_limit.deployed_counts <= braking_distance:
         state.retract_limit.reached = True

@@ -56,6 +56,22 @@ class MotorBus:
         self._check(result, error, action)
         return model
 
+    def ping_status(self, motor_id, *, action):
+        """Ping while distinguishing transport loss from a responding motor fault.
+
+        A Dynamixel can reply to PING with a device error bit set (for example after
+        a hardware shutdown).  That still proves that the serial link and motor are
+        present, so connection status must not collapse to DISCONNECTED.
+        """
+        model, result, error = self.packet.ping(self.port, motor_id)
+        if result != COMM_SUCCESS:
+            raise RuntimeError(f"{action}: {self.packet.getTxRxResult(result)}")
+        return {
+            "model": model,
+            "device_error": int(error),
+            "device_error_text": self.packet.getRxPacketError(error) if error else None,
+        }
+
     def set_torque(self, motor_id, enabled, *, action, checked=True):
         address = (config.LOCK_ADDR_TORQUE_ENABLE if motor_id == config.LOCK_ID
                    else config.ADDR_TORQUE_ENABLE)

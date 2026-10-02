@@ -332,30 +332,80 @@ def execute_deploy() -> dict:
 
 
 def ping_motor() -> dict:
-    """Ping both Dynamixels on the shared U2D2 connection."""
+    """Ping both Dynamixels and keep device faults distinct from disconnection."""
+    result = {
+        'success': True,
+        'connected': False,
+        'device': config.DEVICE_NAME,
+        'winch_connected': False,
+        'lock_connected': False,
+        'winch_hardware_error': False,
+        'lock_hardware_error': False,
+    }
     try:
         with motor_bus.session(state.bus_lock) as bus:
             bus.set_baudrate(config.WINCH_BAUDRATE)
-            winch_model = bus.ping(config.WINCH_ID, action='Ping winch motor')
+            try:
+                winch = bus.ping_status(config.WINCH_ID, action='Ping winch motor')
+                result['winch_connected'] = True
+                result['winch_model_number'] = winch['model']
+                result['winch_hardware_error'] = bool(winch['device_error'])
+                result['winch_error'] = winch['device_error_text']
+            except Exception as exc:
+                result['winch_error'] = str(exc)
+
             bus.set_baudrate(config.LOCK_BAUDRATE)
-            lock_model = bus.ping(config.LOCK_ID, action='Ping lock motor')
-            return {
-                'success': True,
-                'connected': True,
-                'device': config.DEVICE_NAME,
-                'winch_connected': True,
-                'lock_connected': True,
-                'winch_model_number': winch_model,
-                'lock_model_number': lock_model,
-            }
+            try:
+                lock = bus.ping_status(config.LOCK_ID, action='Ping lock motor')
+                result['lock_connected'] = True
+                result['lock_model_number'] = lock['model']
+                result['lock_hardware_error'] = bool(lock['device_error'])
+                result['lock_error'] = lock['device_error_text']
+            except Exception as exc:
+                result['lock_error'] = str(exc)
     except Exception as exc:
-        return {
-            'success': False,
-            'connected': False,
-            'winch_connected': False,
-            'lock_connected': False,
-            'error': str(exc),
-        }
+        result['success'] = False
+        result['error'] = str(exc)
+        return result
+
+    result['connected'] = result['winch_connected'] and result['lock_connected']
+    return result
+
+
+@serialized_control
+def recover_winch_hardware() -> dict:
+    """Reboot a responding XW540 after hardware shutdown.
+
+    If HOME is currently valid and the fault is classified as recoverable, reuse the
+    stricter safety reset path. Otherwise reboot only and deliberately leave the
+    system uninitialized so INITIALIZE must establish a fresh HOME.
+    """
+    if state.initialized and state.retract_limit.reference is not None:
+        if not retract_safety.fault_is_recoverable():
+            raise RuntimeError('Active fault is not safely recoverable; reinitialize instead')
+        return reset_safety_fault()
+
+    with motor_bus.session(state.bus_lock) as bus:
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        result, error = bus.packet.reboot(bus.port, config.WINCH_ID)
+        bus._check(result, error, 'Reboot winch motor')
+        time.sleep(0.5)
+
+    # No HOME exists in this process, so recovery must never invent/preserve one.
+    state.initialized = False
+    state.torque_enabled = False
+    state.lock_state = 'locked'
+    state.motion.direction = 0
+    state.motion.speed_level = 0
+    state.motion.velocity = 0
+    state.retract_limit.reference = None
+    state.retract_limit.raw_position = None
+    state.retract_limit.last_position = None
+    state.retract_limit.deployed_counts = 0
+    state.retract_limit.fault = None
+    state.retract_limit.stopping = False
+    state.retract_limit.reached = False
+    return get_motor_state()
 
 
 @serialized_control

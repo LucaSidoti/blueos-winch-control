@@ -60,6 +60,13 @@ def enable_torque() -> dict:
 def reset_safety_fault() -> dict:
     return control.reset_safety_fault()
 
+@post("/motor/hardware/recover", sync_to_thread=True)
+def recover_winch_hardware() -> dict:
+    try:
+        return control.recover_winch_hardware()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 # ============================================================
 # TORQUE DISABLE
 # ============================================================
@@ -181,6 +188,7 @@ app = Litestar(
         initialize_motor,
         enable_torque,
         reset_safety_fault,
+        recover_winch_hardware,
         disable_torque,
         toggle_lock,
         motor_state,
