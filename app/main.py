@@ -104,6 +104,45 @@ def finish_home_recovery() -> dict:
         return {"success": False, "error": str(exc)}
 
 # ============================================================
+# OPERATIONAL HOME ADJUSTMENT
+# ============================================================
+
+@post("/motor/home-adjust/start", sync_to_thread=True)
+def start_home_adjustment() -> dict:
+    try:
+        return control.start_home_adjustment()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-adjust/retract", sync_to_thread=True)
+def home_adjust_retract() -> dict:
+    try:
+        return control.home_adjust_retract_jog()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-adjust/deploy", sync_to_thread=True)
+def home_adjust_deploy() -> dict:
+    try:
+        return control.home_adjust_deploy_jog()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-adjust/set", sync_to_thread=True)
+def set_operational_home() -> dict:
+    try:
+        return control.set_operational_home_here()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-adjust/cancel", sync_to_thread=True)
+def cancel_home_adjustment() -> dict:
+    try:
+        return control.cancel_home_adjustment()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+# ============================================================
 # TORQUE DISABLE
 # ============================================================
 
@@ -230,6 +269,11 @@ app = Litestar(
         home_recovery_retract,
         home_recovery_deploy,
         finish_home_recovery,
+        start_home_adjustment,
+        home_adjust_retract,
+        home_adjust_deploy,
+        set_operational_home,
+        cancel_home_adjustment,
         disable_torque,
         toggle_lock,
         motor_state,

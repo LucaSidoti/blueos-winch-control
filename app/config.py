@@ -114,6 +114,19 @@ RECOVERY_JOG_COUNTS = round(
 RECOVERY_JOG_TIMEOUT = 3.0
 RECOVERY_JOG_POLL_INTERVAL = 0.02
 
+# Fine operational-HOME adjustment. INITIALIZE captures the immutable hard
+# retract safety reference; ADJUST HOME moves only the normal storage target.
+HOME_ADJUST_JOG_M = 0.01
+HOME_ADJUST_JOG_VELOCITY = 20
+HOME_ADJUST_JOG_COUNTS = max(1, round(
+    HOME_ADJUST_JOG_M
+    * WINCH_COUNTS_PER_REV
+    * WINCH_GEAR_RATIO
+    / (3.141592653589793 * SPOOL_FULL_DIAMETER_M)
+))
+HOME_ADJUST_JOG_TIMEOUT = 2.0
+HOME_ADJUST_JOG_POLL_INTERVAL = 0.02
+
 
 # ============================================================
 # MAVLINK SETTINGS

@@ -73,6 +73,9 @@ def get_motor_state() -> dict:
         'torque_enabled': state.torque_enabled,
         'lock_state': state.lock_state,
         'home_recovery_mode': state.home_recovery_mode,
+        'home_recovery_required': state.home_recovery_required,
+        'home_adjust_mode': state.home_adjust_mode,
+        'operational_home_counts': state.operational_home_counts,
         'status': status_text,
         'direction': state.motion.direction,
         'speed_level': state.motion.speed_level + 1 if state.motion.direction != 0 else 0,
@@ -402,6 +405,9 @@ def recover_winch_hardware() -> dict:
     # No HOME exists in this process. Never invent one.
     state.initialized = False
     state.home_recovery_mode = False
+    state.home_recovery_required = False
+    state.home_adjust_mode = False
+    state.operational_home_counts = 0
     state.torque_enabled = False
     state.lock_state = 'locked'
     state.motion.direction = 0
@@ -438,6 +444,9 @@ def initialize_motor() -> dict:
             state.motion.velocity = 0
             state.initialized = True
             state.home_recovery_mode = False
+            state.home_recovery_required = False
+            state.home_adjust_mode = False
+            state.operational_home_counts = 0
             state.torque_enabled = False
             state.lock_state = 'locked'
             return get_motor_state()
@@ -445,6 +454,7 @@ def initialize_motor() -> dict:
         state.retract_limit.reference = None
         state.initialized = False
         state.home_recovery_mode = False
+        state.home_adjust_mode = False
         state.torque_enabled = False
         state.lock_state = 'locked'
         return {'success': False, 'error': str(exc)}
@@ -523,6 +533,9 @@ def reset_safety_fault() -> dict:
                 state.initialized = False
                 state.lock_state = 'locked'
                 state.home_recovery_mode = False
+                state.home_recovery_required = True
+                state.home_adjust_mode = False
+                state.operational_home_counts = 0
                 state.depth.phase = 'idle'
                 state.depth.last_error = None
                 return {
@@ -533,6 +546,8 @@ def reset_safety_fault() -> dict:
         retract_safety.clear_recoverable_fault()
         state.lock_state = 'locked'
         state.home_recovery_mode = False
+        state.home_recovery_required = False
+        state.home_adjust_mode = False
         state.depth.phase = 'idle'
         state.depth.last_error = None
         return get_motor_state()
@@ -636,6 +651,8 @@ def start_home_recovery() -> dict:
     """
     if state.initialized or state.retract_limit.reference is not None:
         raise RuntimeError('HOME recovery is only available when HOME is not valid')
+    if not state.home_recovery_required:
+        raise RuntimeError('HOME recovery has not been requested by a HOME-loss fault')
     if state.home_recovery_mode:
         return get_motor_state()
 
@@ -678,6 +695,7 @@ def start_home_recovery() -> dict:
         raise
     state.lock_state = 'unlocked'
     state.home_recovery_mode = True
+    state.home_adjust_mode = False
     state.retract_limit.fault = None
     state.retract_limit.stopping = False
     return get_motor_state()
@@ -772,6 +790,8 @@ def finish_home_recovery() -> dict:
         bus.set_baudrate(config.WINCH_BAUDRATE)
         bus.set_torque(config.WINCH_ID, config.TORQUE_DISABLE, action='Disable winch torque after HOME recovery')
     state.home_recovery_mode = False
+    state.home_recovery_required = False
+    state.home_adjust_mode = False
     state.torque_enabled = False
     state.lock_state = 'locked'
     state.motion.direction = 0
@@ -781,6 +801,117 @@ def finish_home_recovery() -> dict:
     state.retract_limit.stopping = False
     return get_motor_state()
 
+
+
+def _require_home_adjust_ready():
+    if not state.initialized or state.retract_limit.reference is None:
+        raise RuntimeError('Initialize the system before adjusting HOME')
+    if state.retract_limit.fault is not None:
+        raise RuntimeError('Clear the safety fault before adjusting HOME')
+    if state.home_recovery_mode:
+        raise RuntimeError('Finish HOME recovery before adjusting HOME')
+    if not state.torque_enabled or state.lock_state != 'unlocked':
+        raise RuntimeError('Enable torque and unlock before adjusting HOME')
+    if state.motion.velocity != 0 or state.retract_limit.stopping:
+        raise RuntimeError('Stop the winch before adjusting HOME')
+
+
+@serialized_control
+def start_home_adjustment() -> dict:
+    """Enter fine adjustment of operational HOME without moving the hard safety reference."""
+    _require_home_adjust_ready()
+    state.home_adjust_mode = True
+    return get_motor_state()
+
+
+@serialized_control
+def home_adjust_jog(direction: int) -> dict:
+    """Move about 1 cm per press while preserving the INITIALIZE hard retract limit."""
+    if direction not in (-1, 1):
+        raise ValueError('HOME adjustment direction must be +1 (retract) or -1 (deploy)')
+    if not state.home_adjust_mode:
+        raise RuntimeError('Start ADJUST HOME first')
+    _require_home_adjust_ready()
+
+    label = 'retract' if direction > 0 else 'deploy'
+    command = direction * config.HOME_ADJUST_JOG_VELOCITY
+    with motor_bus.session(state.bus_lock) as bus:
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        # A retract adjustment remains protected by the immutable hard limit.
+        if direction > 0:
+            retract_safety.validate_retraction(bus, config.HOME_ADJUST_JOG_VELOCITY)
+        else:
+            retract_safety.read_feedback(bus)
+        start_counts = state.retract_limit.deployed_counts
+        started = False
+        try:
+            bus.set_velocity(config.WINCH_ID, command, action=f'Start HOME adjust {label} jog')
+            started = True
+            state.motion.direction = -1 if direction > 0 else 1
+            state.motion.velocity = command
+            state.motion.speed_level = 0
+            deadline = time.monotonic() + config.HOME_ADJUST_JOG_TIMEOUT
+            while True:
+                raw = bus.read_position(config.WINCH_ID, action=f'Read HOME adjust {label} jog position')
+                retract_safety.update_position(raw)
+                moved = abs(state.retract_limit.deployed_counts - start_counts)
+                if moved >= config.HOME_ADJUST_JOG_COUNTS:
+                    break
+                if direction > 0:
+                    braking = retract_safety.stopping_counts(config.HOME_ADJUST_JOG_VELOCITY)
+                    if state.retract_limit.deployed_counts <= braking:
+                        state.retract_limit.reached = True
+                        break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'HOME adjust {label} jog timed out')
+                time.sleep(config.HOME_ADJUST_JOG_POLL_INTERVAL)
+            bus.set_velocity(config.WINCH_ID, 0, action='Stop HOME adjust jog')
+        except Exception:
+            if started:
+                try:
+                    bus.set_velocity(config.WINCH_ID, 0, action='Emergency stop HOME adjust jog')
+                except Exception:
+                    pass
+            raise
+        finally:
+            state.motion.direction = 0
+            state.motion.velocity = 0
+            state.motion.speed_level = 0
+            state.retract_limit.stopping = False
+    return get_motor_state()
+
+
+def home_adjust_retract_jog() -> dict:
+    return home_adjust_jog(+1)
+
+
+def home_adjust_deploy_jog() -> dict:
+    return home_adjust_jog(-1)
+
+
+@serialized_control
+def set_operational_home_here() -> dict:
+    """Store the current continuous payout coordinate as operational storage HOME."""
+    if not state.home_adjust_mode:
+        raise RuntimeError('Start ADJUST HOME first')
+    _require_home_adjust_ready()
+    with motor_bus.session(state.bus_lock) as bus:
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        retract_safety.read_feedback(bus)
+    state.operational_home_counts = int(state.retract_limit.deployed_counts)
+    state.home_adjust_mode = False
+    state.depth.phase = 'idle'
+    state.depth.last_error = None
+    return get_motor_state()
+
+
+@serialized_control
+def cancel_home_adjustment() -> dict:
+    """Leave HOME adjustment without changing the stored operational HOME."""
+    if state.motion.velocity != 0:
+        execute_stop()
+    state.home_adjust_mode = False
+    return get_motor_state()
 
 def _configure_winch(bus):
     """Configure velocity mode with torque disabled and a zero velocity goal."""

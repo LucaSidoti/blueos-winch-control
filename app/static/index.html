@@ -483,13 +483,60 @@
             font-size: 14px;
         }
 
+
+        /* Operational HOME adjustment: fine jogs while hard retract limit stays unchanged */
+        .home-adjust-start {
+            grid-column: 1 / -1;
+            min-height: 48px;
+            background: #D97706;
+        }
+        .home-adjust-group {
+            grid-column: 1 / -1;
+            display: none;
+            margin-top: 2px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(148,163,184,0.18);
+        }
+        .home-adjust-title {
+            color: #F59E0B;
+            font-size: 13px;
+            font-weight: bold;
+            text-align: center;
+            letter-spacing: 0.04em;
+            margin-bottom: 4px;
+        }
+        .home-adjust-note {
+            color: #94A3B8;
+            text-align: center;
+            font-size: 12px;
+            margin-bottom: 12px;
+        }
+        .home-adjust-jogs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .home-adjust-jog { min-height: 62px; font-size: 15px; }
+        .home-adjust-retract { background: #16A34A; }
+        .home-adjust-deploy { background: #2563EB; }
+        .home-adjust-actions {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .home-adjust-set { min-height: 52px; background: #F59E0B; color: #0F172A; }
+        .home-adjust-cancel { min-height: 52px; background: #475569; }
+
         @media (max-width: 620px) {
             .controls,
             .setup-controls,
             .telemetry-grid,
             .depth-grid,
             .depth-actions,
-            .home-recovery-jogs {
+            .home-recovery-jogs,
+            .home-adjust-jogs,
+            .home-adjust-actions {
                 grid-template-columns: 1fr;
             }
 
@@ -601,6 +648,29 @@
                     onclick="finishHomeRecovery()">
                     FINISH HOME RECOVERY
                 </button>
+            </div>
+
+            <button id="home-adjust-start-button" class="setup-button home-adjust-start"
+                onclick="startHomeAdjustment()" style="display:none;">
+                ADJUST HOME
+            </button>
+            <div id="home-adjust-group" class="home-adjust-group">
+                <div class="home-adjust-title">ADJUST OPERATIONAL HOME</div>
+                <div class="home-adjust-note">Hard retract safety limit remains unchanged</div>
+                <div class="home-adjust-jogs">
+                    <button id="home-adjust-retract-button" class="home-adjust-jog home-adjust-retract" onclick="homeAdjustJog('retract')">
+                        ▲ RETRACT
+                        <span class="home-recovery-distance">~1 cm per jog</span>
+                    </button>
+                    <button id="home-adjust-deploy-button" class="home-adjust-jog home-adjust-deploy" onclick="homeAdjustJog('deploy')">
+                        ▼ DEPLOY
+                        <span class="home-recovery-distance">~1 cm per jog</span>
+                    </button>
+                </div>
+                <div class="home-adjust-actions">
+                    <button id="home-adjust-set-button" class="home-adjust-set" onclick="setHomeHere()">SET HOME HERE</button>
+                    <button id="home-adjust-cancel-button" class="home-adjust-cancel" onclick="cancelHomeAdjustment()">CANCEL</button>
+                </div>
             </div>
 
             <button
@@ -775,6 +845,12 @@
     const homeRecoveryJogButton = document.getElementById("home-recovery-jog-button");
     const homeRecoveryDeployButton = document.getElementById("home-recovery-deploy-button");
     const homeRecoveryFinishButton = document.getElementById("home-recovery-finish-button");
+    const homeAdjustStartButton = document.getElementById("home-adjust-start-button");
+    const homeAdjustGroup = document.getElementById("home-adjust-group");
+    const homeAdjustRetractButton = document.getElementById("home-adjust-retract-button");
+    const homeAdjustDeployButton = document.getElementById("home-adjust-deploy-button");
+    const homeAdjustSetButton = document.getElementById("home-adjust-set-button");
+    const homeAdjustCancelButton = document.getElementById("home-adjust-cancel-button");
     const lockToggleButton = document.getElementById("lock-toggle-button");
 
     const retractButton = document.getElementById("retract-button");
@@ -813,6 +889,8 @@
     let safetyFaultRecoverable = false;
     let winchHardwareError = false;
     let homeRecoveryMode = false;
+    let homeRecoveryRequired = false;
+    let homeAdjustMode = false;
 
 
     async function apiRequest(path, method = "GET", body = null) {
@@ -905,29 +983,45 @@
             mechanicalLockState === "unlocking" ||
             unlockingRequiresTorque;
 
-        const recoveryAvailable = safetyFaultRecoverable || winchHardwareError;
+        // A normal uninitialized startup is not a safety fault. RESET is shown only
+        // for an initialized recoverable safety fault. A genuine startup hardware
+        // fault remains visible under its distinct RECOVER WINCH HARDWARE label.
+        const resetAvailable = motorInitialized && safetyFaultRecoverable;
+        const hardwareRecoveryAvailable = winchHardwareError && !safetyFaultRecoverable;
+        const recoveryAvailable = resetAvailable || hardwareRecoveryAvailable;
         safetyResetButton.style.display = recoveryAvailable ? "block" : "none";
-        safetyResetButton.textContent = winchHardwareError && !safetyFaultRecoverable
+        safetyResetButton.textContent = hardwareRecoveryAvailable
             ? "RECOVER WINCH HARDWARE"
             : "RESET SAFETY FAULT";
         safetyResetButton.disabled = !motorConnected || !recoveryAvailable;
 
-        // HOME recovery is only for the case where the absolute HOME reference
-        // is lost while the CTD is away from physical storage. Normal controls
-        // remain disabled; recovery motion is slow and encoder-bounded per click.
+        // HOME recovery is exceptional: expose it only after software explicitly
+        // invalidated a previously valid HOME during fault recovery.
         homeRecoveryStartButton.style.display =
-            (motorConnected && !motorInitialized && !homeRecoveryMode) ? "block" : "none";
+            (motorConnected && homeRecoveryRequired && !homeRecoveryMode) ? "block" : "none";
         homeRecoveryGroup.style.display = homeRecoveryMode ? "block" : "none";
-        homeRecoveryStartButton.disabled = !motorConnected || motorInitialized;
+        homeRecoveryStartButton.disabled = !motorConnected || !homeRecoveryRequired || homeRecoveryMode;
         homeRecoveryJogButton.disabled = !motorConnected || !homeRecoveryMode;
         homeRecoveryDeployButton.disabled = !motorConnected || !homeRecoveryMode;
         homeRecoveryFinishButton.disabled = !motorConnected || !homeRecoveryMode;
+
+        // ADJUST HOME is a normal calibrated operation, never a fault/recovery path.
+        const homeAdjustAvailable = motorConnected && motorInitialized && motorTorqueEnabled &&
+            mechanicalLockState === "unlocked" && !safetyFault && !homeRecoveryMode;
+        homeAdjustStartButton.style.display = (!homeAdjustMode && homeAdjustAvailable) ? "block" : "none";
+        homeAdjustGroup.style.display = homeAdjustMode ? "block" : "none";
+        homeAdjustStartButton.disabled = !homeAdjustAvailable;
+        homeAdjustRetractButton.disabled = !homeAdjustMode;
+        homeAdjustDeployButton.disabled = !homeAdjustMode;
+        homeAdjustSetButton.disabled = !homeAdjustMode;
+        homeAdjustCancelButton.disabled = !homeAdjustMode;
 
         const motionEnabled =
             motorConnected &&
             motorInitialized &&
             motorTorqueEnabled &&
-            mechanicalLockState === "unlocked";
+            mechanicalLockState === "unlocked" &&
+            !homeAdjustMode;
 
         retractButton.disabled = !motionEnabled;
         deployButton.disabled = !motionEnabled;
@@ -971,7 +1065,7 @@
         }
 
         const retractLimit = data.retract_limit;
-        if (retractLimit?.fault) {
+        if (retractLimit?.fault && (motorInitialized || homeRecoveryRequired)) {
             status.textContent = "SAFETY FAULT";
             status.style.color = "#EF4444";
             directionText.textContent = "Winch protection engaged — reset or recover HOME";
@@ -1077,6 +1171,8 @@
         motorInitialized = data.initialized === true;
         motorTorqueEnabled = data.torque_enabled === true;
         homeRecoveryMode = data.home_recovery_mode === true;
+        homeRecoveryRequired = data.home_recovery_required === true;
+        homeAdjustMode = data.home_adjust_mode === true;
         mechanicalLockState = data.lock_state || "locked";
         safetyFault = data.retract_limit?.fault || null;
         safetyFaultRecoverable = data.retract_limit?.fault_recoverable === true;
@@ -1258,6 +1354,65 @@
             applyState(data);
         } catch (error) {
             clearError();
+            await refreshState();
+        }
+    }
+
+
+    async function startHomeAdjustment() {
+        clearError();
+        if (!window.confirm("ADJUST HOME changes the normal storage position only. The hard retract safety limit captured during INITIALIZE will remain unchanged. Continue?")) return;
+        try {
+            const data = await apiRequest("/motor/home-adjust/start", "POST");
+            if (!data.success) throw new Error(data.error || "Could not start HOME adjustment");
+            applyState(data);
+        } catch (error) {
+            showError(`HOME adjustment error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
+    async function homeAdjustJog(direction) {
+        clearError();
+        homeAdjustRetractButton.disabled = true;
+        homeAdjustDeployButton.disabled = true;
+        try {
+            const endpoint = direction === "deploy"
+                ? "/motor/home-adjust/deploy"
+                : "/motor/home-adjust/retract";
+            const data = await apiRequest(endpoint, "POST");
+            if (!data.success) throw new Error(data.error || "HOME adjustment jog failed");
+            applyState(data);
+            await refreshDepth();
+        } catch (error) {
+            showError(`HOME adjustment error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
+    async function setHomeHere() {
+        clearError();
+        if (!window.confirm("Set the CURRENT CTD position as the operational storage HOME? The hard retract safety limit will not change.")) return;
+        try {
+            const data = await apiRequest("/motor/home-adjust/set", "POST");
+            if (!data.success) throw new Error(data.error || "Could not set operational HOME");
+            applyState(data);
+            await refreshDepth();
+        } catch (error) {
+            showError(`HOME adjustment error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
+    async function cancelHomeAdjustment() {
+        clearError();
+        try {
+            const data = await apiRequest("/motor/home-adjust/cancel", "POST");
+            if (!data.success) throw new Error(data.error || "Could not cancel HOME adjustment");
+            applyState(data);
+            await refreshDepth();
+        } catch (error) {
+            showError(`HOME adjustment error: ${error.message}`);
             await refreshState();
         }
     }

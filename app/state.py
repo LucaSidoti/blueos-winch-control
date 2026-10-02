@@ -46,6 +46,9 @@ class ApplicationState:
     retract_limit: RetractLimitState = field(default_factory=RetractLimitState)
     depth: DepthState = field(default_factory=DepthState)
     home_recovery_mode: bool = False
+    home_recovery_required: bool = False
+    home_adjust_mode: bool = False
+    operational_home_counts: int = 0  # Adjustable storage HOME relative to hard retract reference.
     bus_lock: object = field(default_factory=RLock, repr=False)
 
 state = ApplicationState()

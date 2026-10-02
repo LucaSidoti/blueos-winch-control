@@ -1,10 +1,9 @@
 """Automatic CTD depth and home control.
 
-One shared continuous payout coordinate is maintained by retract_safety:
-    0 counts = HOME captured only during INITIALIZE
-    positive counts = cable deployed from HOME
-
-Depth targets never modify HOME.  Automatic control may move in either direction.
+One continuous payout coordinate is maintained by retract_safety from the hard
+retract reference captured during INITIALIZE. operational_home_counts defines the
+adjustable storage HOME relative to that hard reference. Depth is measured from
+the operational HOME. Automatic depth control never moves the hard safety limit.
 """
 import math
 from threading import Event, Thread
@@ -47,11 +46,12 @@ def payout_from_counts(deployed_counts):
 
 
 def _sample():
-    """Read motor feedback and return payout/depth from the immutable HOME."""
+    """Read feedback and return payout/depth relative to operational HOME."""
     with motor_bus.session(state.bus_lock) as bus:
         bus.set_baudrate(config.WINCH_BAUDRATE)
         retract_safety.read_feedback(bus)
-    payout, revs = payout_from_counts(state.retract_limit.deployed_counts)
+    relative_counts = state.retract_limit.deployed_counts - state.operational_home_counts
+    payout, revs = payout_from_counts(relative_counts)
     depth = payout - config.SENSOR_HEIGHT_ABOVE_WATER_M
     return payout, depth, revs
 
@@ -159,7 +159,7 @@ def _run_depth(generation):
 
 
 def _run_home(generation):
-    """Retract toward the HOME captured during initialization."""
+    """Retract toward the adjustable operational storage HOME."""
     try:
         while not _cancel.wait(config.DEPTH_CONTROL_POLL_INTERVAL):
             if generation != _generation or not state.depth.active:
@@ -240,7 +240,7 @@ def set_target(depth_m):
 
 
 def go_home():
-    """Return to the stored HOME without redefining it."""
+    """Return to the operational storage HOME without changing the hard limit."""
     return _start_worker('home', target_m=None)
 
 
