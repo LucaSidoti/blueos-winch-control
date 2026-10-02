@@ -86,11 +86,10 @@ UNLOCK_VERIFY_POLL_INTERVAL = 0.05
 # ============================================================
 
 # The ratchet has 24 teeth -> 15 degrees per ratchet tooth.
-# With the 2:1 reduction, 6 motor degrees = 3 ratchet degrees.
-WINCH_COUNTS_PER_REV = 4096
-# Motor-to-spool gear reduction.
 # 2 motor revolutions = 1 spool revolution.
+WINCH_COUNTS_PER_REV = 4096
 WINCH_GEAR_RATIO = 2.0
+
 UNLOCK_RELIEF_MOTOR_DEG = 6.0
 UNLOCK_RELIEF_COUNTS = round(
     WINCH_COUNTS_PER_REV * UNLOCK_RELIEF_MOTOR_DEG / 360.0
@@ -101,11 +100,18 @@ UNLOCK_RELIEF_TIMEOUT = 2.0
 UNLOCK_RELIEF_POLL_INTERVAL = 0.02
 UNLOCK_RELIEF_SETTLE_DELAY = 0.2
 
-# Give the spring-loaded pawl time to engage before any XW540 reboot/torque loss.
+# Give the spring-loaded pawl time to engage before any XW540
+# reboot or torque loss.
 LOCK_ENGAGE_SETTLE_DELAY = 0.35
 
-# HOME-loss recovery is deliberately slow and jog-only. Each jog is bounded by
-# encoder travel; there is no automatic retract limit because HOME is unknown.
+
+# ============================================================
+# HOME-LOSS RECOVERY
+# ============================================================
+
+# HOME-loss recovery is deliberately slow and jog-only.
+# Each jog is bounded by encoder travel; there is no automatic
+# retract limit because HOME is unknown.
 RECOVERY_JOG_VELOCITY = 20
 RECOVERY_JOG_MOTOR_DEG = 45.0
 RECOVERY_JOG_COUNTS = round(
@@ -113,19 +119,6 @@ RECOVERY_JOG_COUNTS = round(
 )
 RECOVERY_JOG_TIMEOUT = 3.0
 RECOVERY_JOG_POLL_INTERVAL = 0.02
-
-# Fine operational-HOME adjustment. INITIALIZE captures the immutable hard
-# retract safety reference; ADJUST HOME moves only the normal storage target.
-HOME_ADJUST_JOG_M = 0.01
-HOME_ADJUST_JOG_VELOCITY = 20
-HOME_ADJUST_JOG_COUNTS = max(1, round(
-    HOME_ADJUST_JOG_M
-    * WINCH_COUNTS_PER_REV
-    * WINCH_GEAR_RATIO
-    / (3.141592653589793 * SPOOL_FULL_DIAMETER_M)
-))
-HOME_ADJUST_JOG_TIMEOUT = 2.0
-HOME_ADJUST_JOG_POLL_INTERVAL = 0.02
 
 
 # ============================================================
@@ -140,44 +133,83 @@ PWM_STOP = 1300
 PWM_IDLE = 1500
 PWM_DEPLOY = 1900
 
+
 # ============================================================
-# DEPTH CONTROL / SPOOL MODEL (PRELIMINARY - CALIBRATE ON BOAT)
+# DEPTH CONTROL / SPOOL MODEL
 # ============================================================
 
-# Measured/estimated geometry. The full-spool diameter is the most trusted
-# measurement and is used as the encoder-zero effective winding diameter.
-SPOOL_FULL_DIAMETER_M = 0.15  
-SPOOL_CORE_DIAMETER_M = 0.040   
+# Measured/estimated geometry.
+SPOOL_FULL_DIAMETER_M = 0.15
+SPOOL_CORE_DIAMETER_M = 0.040
 SPOOL_USABLE_WIDTH_M = 0.070
 CABLE_DIAMETER_M = 0.003
-CABLE_NOMINAL_LENGTH_M = 200.0   
+CABLE_NOMINAL_LENGTH_M = 200.0
 
-# Sensor is TODO m above the water when the retract reference is captured.
+
+# ============================================================
+# OPERATIONAL HOME ADJUSTMENT
+# ============================================================
+
+# INITIALIZE captures the hard retract safety reference.
+# ADJUST HOME changes only the operational storage position.
+#
+# HOME adjustment uses small ~1 cm jogs.
+HOME_ADJUST_JOG_M = 0.01
+HOME_ADJUST_JOG_VELOCITY = 20
+
+HOME_ADJUST_JOG_COUNTS = max(
+    1,
+    round(
+        HOME_ADJUST_JOG_M
+        * WINCH_COUNTS_PER_REV
+        * WINCH_GEAR_RATIO
+        / (3.141592653589793 * SPOOL_FULL_DIAMETER_M)
+    ),
+)
+
+HOME_ADJUST_JOG_TIMEOUT = 2.0
+HOME_ADJUST_JOG_POLL_INTERVAL = 0.02
+
+
+# ============================================================
+# DEPTH CONTROL
+# ============================================================
+
+# Sensor height above the water when the reference is captured.
 SENSOR_HEIGHT_ABOVE_WATER_M = 0.0
+
 MAX_TARGET_DEPTH_M = 200.0
 DEPTH_TOLERANCE_M = 0.03
 DEPTH_CONTROL_POLL_INTERVAL = 0.10
 
-# Automatic speed schedule: (distance-to-target threshold in metres, velocity).
+# Automatic speed schedule:
+# (distance-to-target threshold in metres, velocity)
 # First matching threshold is used, from near to far.
 DEPTH_SPEED_PROFILE = [
     (0.25, 20),
     (0.75, 40),
     (2.00, 60),
     (5.00, 80),
-    (float('inf'), 100),
+    (float("inf"), 100),
 ]
 
-# Final retract/storage approach. These limits override the normal target speed.
+# Final retract/storage approach.
+# These limits override the normal target speed.
 STORAGE_SLOWDOWN_PAYOUT_M = 0.50
 STORAGE_CREEP_PAYOUT_M = 0.30
+
 STORAGE_SLOW_VELOCITY = 40
 STORAGE_CREEP_VELOCITY = 20
 
-# Dedicated return-to-storage profile. HOME itself is captured only by INITIALIZE.
+# Dedicated return-to-storage profile.
 HOME_NORMAL_VELOCITY = 60
 HOME_TOLERANCE_M = 0.02
 
-# Position tracker sanity limit. The safety monitor samples during all motion,
-# so a larger jump indicates lost/invalid encoder tracking.
+
+# ============================================================
+# ENCODER SAFETY
+# ============================================================
+
+# Position tracker sanity limit. The safety monitor samples during
+# all motion, so a larger jump indicates lost/invalid encoder tracking.
 ENCODER_MAX_DELTA_COUNTS = 600
