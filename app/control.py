@@ -818,7 +818,7 @@ def _require_home_adjust_ready():
 
 @serialized_control
 def start_home_adjustment() -> dict:
-    """Enter fine adjustment of operational HOME without moving the hard safety reference."""
+    """Enter fine HOME calibration mode. SET HOME HERE will move the hard reference."""
     _require_home_adjust_ready()
     state.home_adjust_mode = True
     return get_motor_state()
@@ -826,7 +826,11 @@ def start_home_adjustment() -> dict:
 
 @serialized_control
 def home_adjust_jog(direction: int) -> dict:
-    """Move about 1 cm per press while preserving the INITIALIZE hard retract limit."""
+    """Move about 1 cm per press for deliberate HOME calibration.
+
+    Calibration retract jogs may cross the previous software retract reference.
+    Each press remains slow, encoder-bounded, and explicitly operator initiated.
+    """
     if direction not in (-1, 1):
         raise ValueError('HOME adjustment direction must be +1 (retract) or -1 (deploy)')
     if not state.home_adjust_mode:
@@ -837,11 +841,10 @@ def home_adjust_jog(direction: int) -> dict:
     command = direction * config.HOME_ADJUST_JOG_VELOCITY
     with motor_bus.session(state.bus_lock) as bus:
         bus.set_baudrate(config.WINCH_BAUDRATE)
-        # A retract adjustment remains protected by the immutable hard limit.
-        if direction > 0:
-            retract_safety.validate_retraction(bus, config.HOME_ADJUST_JOG_VELOCITY)
-        else:
-            retract_safety.read_feedback(bus)
+        # HOME calibration is the one deliberate exception to the existing
+        # software retract reference: read/track feedback, but do not reject a
+        # retract jog merely because it crosses the old reference.
+        retract_safety.read_feedback(bus)
         start_counts = state.retract_limit.deployed_counts
         started = False
         try:
@@ -857,11 +860,6 @@ def home_adjust_jog(direction: int) -> dict:
                 moved = abs(state.retract_limit.deployed_counts - start_counts)
                 if moved >= config.HOME_ADJUST_JOG_COUNTS:
                     break
-                if direction > 0:
-                    braking = retract_safety.stopping_counts(config.HOME_ADJUST_JOG_VELOCITY)
-                    if state.retract_limit.deployed_counts <= braking:
-                        state.retract_limit.reached = True
-                        break
                 if time.monotonic() >= deadline:
                     raise RuntimeError(f'HOME adjust {label} jog timed out')
                 time.sleep(config.HOME_ADJUST_JOG_POLL_INTERVAL)
@@ -891,14 +889,17 @@ def home_adjust_deploy_jog() -> dict:
 
 @serialized_control
 def set_operational_home_here() -> dict:
-    """Store the current continuous payout coordinate as operational storage HOME."""
+    """Set the current position as both calibrated HOME and hard retract reference."""
     if not state.home_adjust_mode:
         raise RuntimeError('Start ADJUST HOME first')
     _require_home_adjust_ready()
     with motor_bus.session(state.bus_lock) as bus:
         bus.set_baudrate(config.WINCH_BAUDRATE)
-        retract_safety.read_feedback(bus)
-    state.operational_home_counts = int(state.retract_limit.deployed_counts)
+        # Rebase the retract protection at the operator-confirmed physical HOME.
+        # capture_reference() verifies the winch is stationary, resets the
+        # continuous payout coordinate to zero, and keeps the safety monitor active.
+        retract_safety.capture_reference(bus)
+    state.operational_home_counts = 0
     state.home_adjust_mode = False
     state.depth.phase = 'idle'
     state.depth.last_error = None

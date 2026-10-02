@@ -656,7 +656,7 @@
             </button>
             <div id="home-adjust-group" class="home-adjust-group">
                 <div class="home-adjust-title">ADJUST OPERATIONAL HOME</div>
-                <div class="home-adjust-note">Hard retract safety limit remains unchanged</div>
+                <div class="home-adjust-note">Calibration mode · ~1 cm bounded jogs</div>
                 <div class="home-adjust-jogs">
                     <button id="home-adjust-retract-button" class="home-adjust-jog home-adjust-retract" onclick="homeAdjustJog('retract')">
                         ▲ RETRACT
@@ -1361,7 +1361,7 @@
 
     async function startHomeAdjustment() {
         clearError();
-        if (!window.confirm("ADJUST HOME changes the normal storage position only. The hard retract safety limit captured during INITIALIZE will remain unchanged. Continue?")) return;
+        if (!window.confirm("ADJUST HOME is a calibration mode. RETRACT may move beyond the previous software retract limit using slow, bounded ~1 cm jogs. SET HOME HERE will make the current position the new HOME and retract safety reference. Continue?")) return;
         try {
             const data = await apiRequest("/motor/home-adjust/start", "POST");
             if (!data.success) throw new Error(data.error || "Could not start HOME adjustment");
@@ -1392,7 +1392,7 @@
 
     async function setHomeHere() {
         clearError();
-        if (!window.confirm("Set the CURRENT CTD position as the operational storage HOME? The hard retract safety limit will not change.")) return;
+        if (!window.confirm("Set the CURRENT CTD position as the new HOME and retract safety reference?")) return;
         try {
             const data = await apiRequest("/motor/home-adjust/set", "POST");
             if (!data.success) throw new Error(data.error || "Could not set operational HOME");

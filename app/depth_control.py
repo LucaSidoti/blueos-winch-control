@@ -1,9 +1,10 @@
 """Automatic CTD depth and home control.
 
-One continuous payout coordinate is maintained by retract_safety from the hard
-retract reference captured during INITIALIZE. operational_home_counts defines the
-adjustable storage HOME relative to that hard reference. Depth is measured from
-the operational HOME. Automatic depth control never moves the hard safety limit.
+One continuous payout coordinate is maintained by retract_safety from the retract
+reference captured during INITIALIZE or the most recent SET HOME HERE calibration.
+operational_home_counts defines the current storage HOME in that coordinate. Depth
+is measured from the operational HOME. Automatic depth control never changes the
+retract safety reference; only explicit HOME calibration can rebase it.
 """
 import math
 from threading import Event, Thread

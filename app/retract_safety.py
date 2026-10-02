@@ -223,7 +223,9 @@ def check():
                 raise RuntimeError('Retract reference is missing')
             if state.retract_limit.fault is not None:
                 stop_and_lock(bus)
-            elif state.motion.velocity > 0:
+            elif state.motion.velocity > 0 and not state.home_adjust_mode:
+                # HOME calibration is an explicit, slow, bounded exception that
+                # may cross the previous software retract reference.
                 braking_distance = stopping_counts(max(state.motion.velocity, measured_velocity))
                 if state.retract_limit.deployed_counts <= braking_distance:
                     state.retract_limit.reached = True
