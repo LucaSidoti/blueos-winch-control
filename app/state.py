@@ -45,6 +45,7 @@ class ApplicationState:
     unlock: UnlockDiagnostics = field(default_factory=UnlockDiagnostics)
     retract_limit: RetractLimitState = field(default_factory=RetractLimitState)
     depth: DepthState = field(default_factory=DepthState)
+    home_recovery_mode: bool = False
     bus_lock: object = field(default_factory=RLock, repr=False)
 
 state = ApplicationState()

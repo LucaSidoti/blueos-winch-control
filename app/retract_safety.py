@@ -101,6 +101,44 @@ def stopping_counts(velocity):
     )
 
 
+def engage_mechanical_lock(bus):
+    """Fail-safe action: release XW430 torque so the spring engages the pawl.
+
+    This is intentionally independent of control.py so it can be used from the
+    safety monitor without creating an import cycle.
+    """
+    bus.set_baudrate(config.LOCK_BAUDRATE)
+    bus.set_torque(
+        config.LOCK_ID,
+        config.TORQUE_DISABLE,
+        action='Engage mechanical lock after winch fault',
+    )
+    state.lock_state = 'locked'
+
+
+def stop_and_lock(bus):
+    """Best-effort emergency response: stop XW540 and engage the passive pawl.
+
+    The lock attempt is made even when the winch stop write fails. The first
+    exception is re-raised after both actions have been attempted.
+    """
+    first_error = None
+    try:
+        stop(bus)
+    except Exception as exc:
+        first_error = exc
+    try:
+        engage_mechanical_lock(bus)
+    except Exception as exc:
+        if first_error is None:
+            first_error = exc
+    state.motion.velocity = 0
+    state.motion.direction = 0
+    state.motion.speed_level = 0
+    if first_error is not None:
+        raise first_error
+
+
 def stop(bus):
     # Keep retrying after a failed write; update motion state only after success.
     state.retract_limit.stopping = True
@@ -184,7 +222,7 @@ def check():
             if state.retract_limit.reference is None:
                 raise RuntimeError('Retract reference is missing')
             if state.retract_limit.fault is not None:
-                stop(bus)
+                stop_and_lock(bus)
             elif state.motion.velocity > 0:
                 braking_distance = stopping_counts(max(state.motion.velocity, measured_velocity))
                 if state.retract_limit.deployed_counts <= braking_distance:
@@ -196,7 +234,7 @@ def check():
         except Exception as exc:
             record_fault(exc)
             try:
-                stop(bus)
+                stop_and_lock(bus)
             except Exception as stop_exc:
                 record_fault(stop_exc)
     except Exception as exc:
@@ -232,7 +270,7 @@ def validate_retraction(bus, velocity):
     except Exception as exc:
         record_fault(exc)
         try:
-            stop(bus)
+            stop_and_lock(bus)
         except Exception as stop_exc:
             record_fault(stop_exc)
         raise

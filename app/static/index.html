@@ -529,6 +529,19 @@
                 RESET SAFETY FAULT
             </button>
 
+            <button id="home-recovery-start-button" class="setup-button safety-reset-button"
+                onclick="startHomeRecovery()" style="display:none;">
+                START HOME RECOVERY
+            </button>
+            <button id="home-recovery-jog-button" class="setup-button safety-reset-button"
+                onclick="homeRecoveryJog()" style="display:none;">
+                RETRACT JOG (~3 CM)
+            </button>
+            <button id="home-recovery-finish-button" class="setup-button initialize-button"
+                onclick="finishHomeRecovery()" style="display:none;">
+                FINISH HOME RECOVERY
+            </button>
+
             <button
                 id="lock-toggle-button"
                 class="lock-toggle-button unlock-action"
@@ -696,6 +709,9 @@
     const torqueEnableButton = document.getElementById("torque-enable-button");
     const torqueDisableButton = document.getElementById("torque-disable-button");
     const safetyResetButton = document.getElementById("safety-reset-button");
+    const homeRecoveryStartButton = document.getElementById("home-recovery-start-button");
+    const homeRecoveryJogButton = document.getElementById("home-recovery-jog-button");
+    const homeRecoveryFinishButton = document.getElementById("home-recovery-finish-button");
     const lockToggleButton = document.getElementById("lock-toggle-button");
 
     const retractButton = document.getElementById("retract-button");
@@ -733,6 +749,7 @@
     let safetyFault = null;
     let safetyFaultRecoverable = false;
     let winchHardwareError = false;
+    let homeRecoveryMode = false;
 
 
     async function apiRequest(path, method = "GET", body = null) {
@@ -831,6 +848,17 @@
             ? "RECOVER WINCH HARDWARE"
             : "RESET SAFETY FAULT";
         safetyResetButton.disabled = !motorConnected || !recoveryAvailable;
+
+        // HOME recovery is only for the case where the absolute HOME reference
+        // is lost while the CTD is away from physical storage. Normal controls
+        // remain disabled; recovery motion is slow and encoder-bounded per click.
+        homeRecoveryStartButton.style.display =
+            (motorConnected && !motorInitialized && !homeRecoveryMode) ? "block" : "none";
+        homeRecoveryJogButton.style.display = homeRecoveryMode ? "block" : "none";
+        homeRecoveryFinishButton.style.display = homeRecoveryMode ? "block" : "none";
+        homeRecoveryStartButton.disabled = !motorConnected || motorInitialized;
+        homeRecoveryJogButton.disabled = !motorConnected || !homeRecoveryMode;
+        homeRecoveryFinishButton.disabled = !motorConnected || !homeRecoveryMode;
 
         const motionEnabled =
             motorConnected &&
@@ -985,6 +1013,7 @@
 
         motorInitialized = data.initialized === true;
         motorTorqueEnabled = data.torque_enabled === true;
+        homeRecoveryMode = data.home_recovery_mode === true;
         mechanicalLockState = data.lock_state || "locked";
         safetyFault = data.retract_limit?.fault || null;
         safetyFaultRecoverable = data.retract_limit?.fault_recoverable === true;
@@ -1032,6 +1061,9 @@
 
     async function initializeMotor() {
         clearError();
+        if (!window.confirm("INITIALIZE defines the CURRENT CTD position as HOME. Continue only if the CTD is physically in its true storage/HOME position.")) {
+            return;
+        }
 
         try {
             const data = await apiRequest(
@@ -1114,6 +1146,46 @@
             await refreshDepth();
         } catch (error) {
             showError(`Safety reset error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
+
+    async function startHomeRecovery() {
+        clearError();
+        if (!window.confirm("HOME RECOVERY has no automatic HOME limit. Use only to retrieve a CTD when HOME is lost. Motion will be RETRACT-only, slow, and bounded per jog. Continue?")) return;
+        try {
+            const data = await apiRequest("/motor/home-recovery/start", "POST");
+            if (!data.success) throw new Error(data.error || "Could not start HOME recovery");
+            applyState(data);
+        } catch (error) {
+            showError(`HOME recovery error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
+    async function homeRecoveryJog() {
+        clearError();
+        homeRecoveryJogButton.disabled = true;
+        try {
+            const data = await apiRequest("/motor/home-recovery/jog", "POST");
+            if (!data.success) throw new Error(data.error || "Recovery jog failed");
+            applyState(data);
+        } catch (error) {
+            showError(`HOME recovery jog error: ${error.message}`);
+            await refreshState();
+        }
+    }
+
+    async function finishHomeRecovery() {
+        clearError();
+        if (!window.confirm("Finish recovery only when the CTD is physically at the true storage/HOME position. The pawl will engage and torque will be disabled; then press INITIALIZE.")) return;
+        try {
+            const data = await apiRequest("/motor/home-recovery/finish", "POST");
+            if (!data.success) throw new Error(data.error || "Could not finish HOME recovery");
+            applyState(data);
+        } catch (error) {
+            showError(`HOME recovery error: ${error.message}`);
             await refreshState();
         }
     }

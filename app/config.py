@@ -101,6 +101,19 @@ UNLOCK_RELIEF_TIMEOUT = 2.0
 UNLOCK_RELIEF_POLL_INTERVAL = 0.02
 UNLOCK_RELIEF_SETTLE_DELAY = 0.2
 
+# Give the spring-loaded pawl time to engage before any XW540 reboot/torque loss.
+LOCK_ENGAGE_SETTLE_DELAY = 0.35
+
+# HOME-loss recovery is deliberately slow and jog-only. Each jog is bounded by
+# encoder travel; there is no automatic retract limit because HOME is unknown.
+RECOVERY_JOG_VELOCITY = 20
+RECOVERY_JOG_MOTOR_DEG = 45.0
+RECOVERY_JOG_COUNTS = round(
+    WINCH_COUNTS_PER_REV * RECOVERY_JOG_MOTOR_DEG / 360.0
+)
+RECOVERY_JOG_TIMEOUT = 3.0
+RECOVERY_JOG_POLL_INTERVAL = 0.02
+
 
 # ============================================================
 # MAVLINK SETTINGS

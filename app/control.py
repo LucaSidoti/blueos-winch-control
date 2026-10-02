@@ -48,7 +48,7 @@ def write_velocity(velocity: int):
             _send_winch_velocity(bus, velocity)
         except Exception as exc:
             retract_safety.record_fault(exc)
-            retract_safety.stop(bus)
+            retract_safety.stop_and_lock(bus)
             raise
         if velocity == 0:
             # Keep feedback sampling until physical motion has actually stopped,
@@ -72,6 +72,7 @@ def get_motor_state() -> dict:
         'initialized': state.initialized,
         'torque_enabled': state.torque_enabled,
         'lock_state': state.lock_state,
+        'home_recovery_mode': state.home_recovery_mode,
         'status': status_text,
         'direction': state.motion.direction,
         'speed_level': state.motion.speed_level + 1 if state.motion.direction != 0 else 0,
@@ -374,11 +375,10 @@ def ping_motor() -> dict:
 
 @serialized_control
 def recover_winch_hardware() -> dict:
-    """Reboot a responding XW540 after hardware shutdown.
+    """Recover a responding XW540 hardware shutdown without dropping the load.
 
-    If HOME is currently valid and the fault is classified as recoverable, reuse the
-    stricter safety reset path. Otherwise reboot only and deliberately leave the
-    system uninitialized so INITIALIZE must establish a fresh HOME.
+    If HOME is valid, use reset_safety_fault(). If HOME is absent, first engage
+    the passive pawl, reboot the XW540, and leave the system uninitialized.
     """
     if state.initialized and state.retract_limit.reference is not None:
         if not retract_safety.fault_is_recoverable():
@@ -386,13 +386,19 @@ def recover_winch_hardware() -> dict:
         return reset_safety_fault()
 
     with motor_bus.session(state.bus_lock) as bus:
+        # Never reboot a load-bearing XW540 with the pawl intentionally lifted.
+        retract_safety.engage_mechanical_lock(bus)
+        time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
         bus.set_baudrate(config.WINCH_BAUDRATE)
         result, error = bus.packet.reboot(bus.port, config.WINCH_ID)
         bus._check(result, error, 'Reboot winch motor')
         time.sleep(0.5)
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        bus.set_velocity(config.WINCH_ID, 0, action='Set winch zero velocity after recovery')
 
-    # No HOME exists in this process, so recovery must never invent/preserve one.
+    # No HOME exists in this process. Never invent one.
     state.initialized = False
+    state.home_recovery_mode = False
     state.torque_enabled = False
     state.lock_state = 'locked'
     state.motion.direction = 0
@@ -411,6 +417,8 @@ def recover_winch_hardware() -> dict:
 @serialized_control
 def initialize_motor() -> dict:
     """Initialize both Dynamixels and leave the system safely locked."""
+    if state.home_recovery_mode:
+        return {'success': False, 'error': 'Finish HOME recovery before initializing'}
     if state.motion.velocity != 0 or state.retract_limit.stopping:
         return {'success': False, 'error': 'Stop the winch before initializing'}
     state.retract_limit.reference = None
@@ -426,12 +434,14 @@ def initialize_motor() -> dict:
             state.motion.speed_level = 0
             state.motion.velocity = 0
             state.initialized = True
+            state.home_recovery_mode = False
             state.torque_enabled = False
             state.lock_state = 'locked'
             return get_motor_state()
     except Exception as exc:
         state.retract_limit.reference = None
         state.initialized = False
+        state.home_recovery_mode = False
         state.torque_enabled = False
         state.lock_state = 'locked'
         return {'success': False, 'error': str(exc)}
@@ -439,59 +449,76 @@ def initialize_motor() -> dict:
 
 @serialized_control
 def reset_safety_fault() -> dict:
-    """Recover remotely from a Dynamixel torque-loss/shutdown fault.
+    """Recover a torque/hardware shutdown while preserving HOME when safe.
 
-    HOME is preserved only if the encoder remains consistent across the reboot.
-    Other safety faults still require a normal reinitialization.
+    Critical invariant: the spring-loaded pawl is engaged BEFORE XW540 reboot.
+    Recovery always finishes LOCKED; only an explicit later UNLOCK may move.
     """
     try:
         if not state.initialized or state.retract_limit.reference is None:
             raise RuntimeError('System is not initialized')
         if not retract_safety.fault_is_recoverable():
             raise RuntimeError(
-                'Safety fault is not remotely recoverable; reinitialize the winch',
+                'Safety fault is not remotely recoverable; HOME recovery is required',
             )
 
-        # Automatic motion must not restart after recovery.
         state.depth.active = False
         state.depth.mode = 'idle'
         state.depth.command_velocity = 0
         state.motion.direction = 0
         state.motion.speed_level = 0
         state.motion.velocity = 0
-        state.torque_enabled = False
 
         with motor_bus.session(state.bus_lock) as bus:
-            bus.set_baudrate(config.WINCH_BAUDRATE)
+            # 1) Make the load passive-safe first. XW430 torque OFF lets the
+            # spring drive the pawl into the ratchet.
+            retract_safety.engage_mechanical_lock(bus)
+            time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
 
-            # A Dynamixel hardware shutdown normally requires a REBOOT instruction
-            # before Torque Enable can be set again.
+            # 2) Reboot the faulted XW540 only after the pawl has been commanded in.
+            bus.set_baudrate(config.WINCH_BAUDRATE)
             result, error = bus.packet.reboot(bus.port, config.WINCH_ID)
             bus._check(result, error, 'Reboot winch motor')
+            state.torque_enabled = False
             time.sleep(0.5)
 
+            # 3) Zero goal BEFORE torque enable, then enable holding torque.
             bus.set_baudrate(config.WINCH_BAUDRATE)
+            bus.set_velocity(config.WINCH_ID, 0, action='Set winch zero velocity after reboot')
+            bus.set_torque(
+                config.WINCH_ID, config.TORQUE_ENABLE,
+                action='Re-enable winch torque after safety reset',
+            )
+            state.torque_enabled = True
+
+            # 4) Only now check encoder continuity. If this fails, keep the pawl
+            # locked and invalidate HOME rather than pretending recovery succeeded.
             position = bus.read_position(
                 config.WINCH_ID, action='Read winch position after safety reset',
             )
-            # Preserve HOME only if the encoder is still consistent.
-            retract_safety.update_position(position)
-
-            bus.set_velocity(config.WINCH_ID, 0, action='Set winch zero velocity after reboot')
-            bus.set_torque(
-                config.WINCH_ID,
-                config.TORQUE_ENABLE,
-                action='Re-enable winch torque after safety reset',
-            )
+            try:
+                retract_safety.update_position(position)
+            except Exception as exc:
+                state.retract_limit.reference = None
+                state.initialized = False
+                state.retract_limit.fault = f'HOME lost during recovery: {exc}'
+                state.retract_limit.stopping = False
+                raise RuntimeError(
+                    'HOME could not be preserved. The pawl is engaged; use HOME RECOVERY '
+                    'to jog the CTD to the physical storage position, then INITIALIZE.'
+                ) from exc
 
         retract_safety.clear_recoverable_fault()
-        state.torque_enabled = True
+        state.lock_state = 'locked'
+        state.home_recovery_mode = False
         state.depth.phase = 'idle'
         state.depth.last_error = None
         return get_motor_state()
     except Exception as exc:
-        state.torque_enabled = False
-        return {'success': False, 'error': str(exc)}
+        # Do not claim torque state changed unless we know it did. The mechanical
+        # lock was commanded before reboot and remains the primary load holder.
+        state.lock_state = 'locked'
+        return {**get_motor_state(), 'success': False, 'error': str(exc)}
 
 
 @serialized_control
@@ -575,6 +602,138 @@ def toggle_lock() -> dict:
                 'success': state.unlock.success,
             },
         }
+
+
+@serialized_control
+def start_home_recovery() -> dict:
+    """Enter supervised HOME-loss recovery with no automatic retract limit.
+
+    This mode exists only to retrieve a CTD after HOME was lost. It enables
+    XW540 holding torque, performs the normal bounded pawl load relief, then
+    lifts the pawl. Movement is restricted to bounded RETRACT jogs.
+    """
+    if state.initialized or state.retract_limit.reference is not None:
+        raise RuntimeError('HOME recovery is only available when HOME is not valid')
+    if state.home_recovery_mode:
+        return get_motor_state()
+
+    state.motion.direction = 0
+    state.motion.speed_level = 0
+    state.motion.velocity = 0
+    state.lock_state = 'locked'
+    with motor_bus.session(state.bus_lock) as bus:
+        retract_safety.engage_mechanical_lock(bus)
+        time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
+        initialize_lock_motor(bus)
+        _configure_winch(bus)
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        bus.set_torque(config.WINCH_ID, config.TORQUE_ENABLE, action='Enable winch torque for HOME recovery')
+        state.torque_enabled = True
+
+        # Bounded retract relief; unlike normal unlock this intentionally does not
+        # require HOME because HOME is exactly what is being recovered.
+        start_raw = int(bus.read_position(config.WINCH_ID, action='Read recovery relief start')) % config.WINCH_COUNTS_PER_REV
+        bus.set_velocity(config.WINCH_ID, config.UNLOCK_RELIEF_VELOCITY, action='Recovery pawl load relief')
+        deadline = time.monotonic() + config.UNLOCK_RELIEF_TIMEOUT
+        try:
+            while True:
+                raw = int(bus.read_position(config.WINCH_ID, action='Read recovery relief position')) % config.WINCH_COUNTS_PER_REV
+                if retract_safety.encoder_delta(raw, start_raw) >= config.UNLOCK_RELIEF_COUNTS:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('HOME recovery pawl load relief timed out')
+                time.sleep(config.UNLOCK_RELIEF_POLL_INTERVAL)
+        finally:
+            bus.set_velocity(config.WINCH_ID, 0, action='Stop recovery pawl relief')
+
+    time.sleep(config.UNLOCK_RELIEF_SETTLE_DELAY)
+    try:
+        _lift_pawl()
+        verify_unlock()
+    except Exception:
+        _release_pawl_after_failure()
+        state.lock_state = 'locked'
+        raise
+    state.lock_state = 'unlocked'
+    state.home_recovery_mode = True
+    state.retract_limit.fault = None
+    state.retract_limit.stopping = False
+    return get_motor_state()
+
+
+@serialized_control
+def home_recovery_retract_jog() -> dict:
+    """Perform one slow, encoder-bounded retract jog while HOME is unknown.
+
+    Any jog error commands zero velocity and drops the XW430 torque so the
+    spring-loaded pawl becomes the fallback load holder.
+    """
+    if not state.home_recovery_mode or state.initialized:
+        raise RuntimeError('Start HOME recovery first')
+    if not state.torque_enabled or state.lock_state != 'unlocked':
+        raise RuntimeError('HOME recovery is not ready for motion')
+    with motor_bus.session(state.bus_lock) as bus:
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        start_raw = int(bus.read_position(config.WINCH_ID, action='Read recovery jog start')) % config.WINCH_COUNTS_PER_REV
+        started = False
+        try:
+            bus.set_velocity(config.WINCH_ID, config.RECOVERY_JOG_VELOCITY, action='Start HOME recovery retract jog')
+            started = True
+            state.motion.direction = -1
+            state.motion.velocity = config.RECOVERY_JOG_VELOCITY
+            state.motion.speed_level = 0
+            deadline = time.monotonic() + config.RECOVERY_JOG_TIMEOUT
+            while True:
+                raw = int(bus.read_position(config.WINCH_ID, action='Read recovery jog position')) % config.WINCH_COUNTS_PER_REV
+                moved = retract_safety.encoder_delta(raw, start_raw)
+                if moved >= config.RECOVERY_JOG_COUNTS:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('HOME recovery retract jog timed out')
+                time.sleep(config.RECOVERY_JOG_POLL_INTERVAL)
+            bus.set_velocity(config.WINCH_ID, 0, action='Stop HOME recovery jog')
+        except Exception:
+            if started:
+                try:
+                    bus.set_baudrate(config.WINCH_BAUDRATE)
+                    bus.set_velocity(config.WINCH_ID, 0, action='Emergency stop HOME recovery jog')
+                except Exception:
+                    pass
+            try:
+                retract_safety.engage_mechanical_lock(bus)
+                state.lock_state = 'locked'
+            except Exception:
+                pass
+            state.home_recovery_mode = False
+            raise
+        finally:
+            state.motion.direction = 0
+            state.motion.velocity = 0
+            state.motion.speed_level = 0
+    return get_motor_state()
+
+
+@serialized_control
+def finish_home_recovery() -> dict:
+    """Stop, engage pawl, disable XW540 torque, and exit recovery mode."""
+    if not state.home_recovery_mode:
+        raise RuntimeError('HOME recovery is not active')
+    with motor_bus.session(state.bus_lock) as bus:
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        bus.set_velocity(config.WINCH_ID, 0, action='Stop HOME recovery')
+        retract_safety.engage_mechanical_lock(bus)
+        time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        bus.set_torque(config.WINCH_ID, config.TORQUE_DISABLE, action='Disable winch torque after HOME recovery')
+    state.home_recovery_mode = False
+    state.torque_enabled = False
+    state.lock_state = 'locked'
+    state.motion.direction = 0
+    state.motion.velocity = 0
+    state.motion.speed_level = 0
+    state.retract_limit.fault = None
+    state.retract_limit.stopping = False
+    return get_motor_state()
 
 
 def _configure_winch(bus):

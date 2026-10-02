@@ -67,6 +67,27 @@ def recover_winch_hardware() -> dict:
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
+@post("/motor/home-recovery/start", sync_to_thread=True)
+def start_home_recovery() -> dict:
+    try:
+        return control.start_home_recovery()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-recovery/jog", sync_to_thread=True)
+def home_recovery_jog() -> dict:
+    try:
+        return control.home_recovery_retract_jog()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-recovery/finish", sync_to_thread=True)
+def finish_home_recovery() -> dict:
+    try:
+        return control.finish_home_recovery()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
 # ============================================================
 # TORQUE DISABLE
 # ============================================================
@@ -189,6 +210,9 @@ app = Litestar(
         enable_torque,
         reset_safety_fault,
         recover_winch_hardware,
+        start_home_recovery,
+        home_recovery_jog,
+        finish_home_recovery,
         disable_torque,
         toggle_lock,
         motor_state,
