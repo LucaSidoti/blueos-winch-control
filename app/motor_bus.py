@@ -56,6 +56,21 @@ class MotorBus:
         self._check(result, error, action)
         return model
 
+    def reboot(self, motor_id, *, action, allow_device_error=False):
+        """Reboot a Dynamixel.
+
+        A motor in hardware shutdown can acknowledge REBOOT while still returning
+        its latched device-error bit in that same status packet.  For recovery we
+        may accept that device error, but transport/communication failures remain
+        fatal.  The caller must verify the motor after the reboot delay.
+        """
+        result, error = self.packet.reboot(self.port, motor_id)
+        if result != COMM_SUCCESS:
+            raise RuntimeError(f"{action}: {self.packet.getTxRxResult(result)}")
+        if error != 0 and not allow_device_error:
+            raise RuntimeError(f"{action}: {self.packet.getRxPacketError(error)}")
+        return int(error)
+
     def ping_status(self, motor_id, *, action):
         """Ping while distinguishing transport loss from a responding motor fault.
 

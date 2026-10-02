@@ -390,8 +390,11 @@ def recover_winch_hardware() -> dict:
         retract_safety.engage_mechanical_lock(bus)
         time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
         bus.set_baudrate(config.WINCH_BAUDRATE)
-        result, error = bus.packet.reboot(bus.port, config.WINCH_ID)
-        bus._check(result, error, 'Reboot winch motor')
+        bus.reboot(
+            config.WINCH_ID,
+            action='Reboot winch motor',
+            allow_device_error=True,
+        )
         time.sleep(0.5)
         bus.set_baudrate(config.WINCH_BAUDRATE)
         bus.set_velocity(config.WINCH_ID, 0, action='Set winch zero velocity after recovery')
@@ -477,8 +480,14 @@ def reset_safety_fault() -> dict:
 
             # 2) Reboot the faulted XW540 only after the pawl has been commanded in.
             bus.set_baudrate(config.WINCH_BAUDRATE)
-            result, error = bus.packet.reboot(bus.port, config.WINCH_ID)
-            bus._check(result, error, 'Reboot winch motor')
+            # A hardware-shutdown motor can acknowledge REBOOT while the reply
+            # still carries the *old* hardware-error bit. Accept that device bit
+            # for this instruction only; a transport failure is still fatal.
+            bus.reboot(
+                config.WINCH_ID,
+                action='Reboot winch motor',
+                allow_device_error=True,
+            )
             state.torque_enabled = False
             time.sleep(0.5)
 
@@ -498,15 +507,28 @@ def reset_safety_fault() -> dict:
             )
             try:
                 retract_safety.update_position(position)
-            except Exception as exc:
+            except Exception:
+                # This is an expected branch after a hard obstruction: the pawl may
+                # have caught on the next ratchet tooth, so the encoder can legitimately
+                # move farther than the continuity threshold. Do not expose the low-level
+                # encoder exception to the operator. Invalidate HOME and transition in
+                # one press to the explicit supervised HOME-recovery workflow.
                 state.retract_limit.reference = None
-                state.initialized = False
-                state.retract_limit.fault = f'HOME lost during recovery: {exc}'
+                state.retract_limit.raw_position = None
+                state.retract_limit.last_position = None
+                state.retract_limit.deployed_counts = 0
+                state.retract_limit.fault = None
                 state.retract_limit.stopping = False
-                raise RuntimeError(
-                    'HOME could not be preserved. The pawl is engaged; use HOME RECOVERY '
-                    'to jog the CTD to the physical storage position, then INITIALIZE.'
-                ) from exc
+                state.retract_limit.reached = False
+                state.initialized = False
+                state.lock_state = 'locked'
+                state.home_recovery_mode = False
+                state.depth.phase = 'idle'
+                state.depth.last_error = None
+                return {
+                    **get_motor_state(),
+                    'home_recovery_required': True,
+                }
 
         retract_safety.clear_recoverable_fault()
         state.lock_state = 'locked'
@@ -662,34 +684,50 @@ def start_home_recovery() -> dict:
 
 
 @serialized_control
-def home_recovery_retract_jog() -> dict:
-    """Perform one slow, encoder-bounded retract jog while HOME is unknown.
+def home_recovery_jog(direction: int) -> dict:
+    """Perform one slow, encoder-bounded HOME-recovery jog.
 
-    Any jog error commands zero velocity and drops the XW430 torque so the
-    spring-loaded pawl becomes the fallback load holder.
+    direction=+1 retracts toward storage; direction=-1 deploys away from storage.
+    HOME is unknown in this mode, so BOTH directions are deliberately slow and
+    bounded to one short encoder-measured jog per operator press.  Any error
+    commands zero velocity and engages the spring-loaded pawl.
     """
+    if direction not in (-1, 1):
+        raise ValueError('HOME recovery direction must be +1 (retract) or -1 (deploy)')
     if not state.home_recovery_mode or state.initialized:
         raise RuntimeError('Start HOME recovery first')
     if not state.torque_enabled or state.lock_state != 'unlocked':
         raise RuntimeError('HOME recovery is not ready for motion')
+
+    label = 'retract' if direction > 0 else 'deploy'
+    command = direction * config.RECOVERY_JOG_VELOCITY
+    target_counts = config.RECOVERY_JOG_COUNTS
+
     with motor_bus.session(state.bus_lock) as bus:
         bus.set_baudrate(config.WINCH_BAUDRATE)
-        start_raw = int(bus.read_position(config.WINCH_ID, action='Read recovery jog start')) % config.WINCH_COUNTS_PER_REV
+        start_raw = int(bus.read_position(
+            config.WINCH_ID, action=f'Read recovery {label} jog start',
+        )) % config.WINCH_COUNTS_PER_REV
         started = False
         try:
-            bus.set_velocity(config.WINCH_ID, config.RECOVERY_JOG_VELOCITY, action='Start HOME recovery retract jog')
+            bus.set_velocity(
+                config.WINCH_ID, command,
+                action=f'Start HOME recovery {label} jog',
+            )
             started = True
-            state.motion.direction = -1
-            state.motion.velocity = config.RECOVERY_JOG_VELOCITY
+            state.motion.direction = -1 if direction > 0 else 1
+            state.motion.velocity = command
             state.motion.speed_level = 0
             deadline = time.monotonic() + config.RECOVERY_JOG_TIMEOUT
             while True:
-                raw = int(bus.read_position(config.WINCH_ID, action='Read recovery jog position')) % config.WINCH_COUNTS_PER_REV
+                raw = int(bus.read_position(
+                    config.WINCH_ID, action=f'Read recovery {label} jog position',
+                )) % config.WINCH_COUNTS_PER_REV
                 moved = retract_safety.encoder_delta(raw, start_raw)
-                if moved >= config.RECOVERY_JOG_COUNTS:
+                if direction * moved >= target_counts:
                     break
                 if time.monotonic() >= deadline:
-                    raise RuntimeError('HOME recovery retract jog timed out')
+                    raise RuntimeError(f'HOME recovery {label} jog timed out')
                 time.sleep(config.RECOVERY_JOG_POLL_INTERVAL)
             bus.set_velocity(config.WINCH_ID, 0, action='Stop HOME recovery jog')
         except Exception:
@@ -711,6 +749,14 @@ def home_recovery_retract_jog() -> dict:
             state.motion.velocity = 0
             state.motion.speed_level = 0
     return get_motor_state()
+
+
+def home_recovery_retract_jog() -> dict:
+    return home_recovery_jog(+1)
+
+
+def home_recovery_deploy_jog() -> dict:
+    return home_recovery_jog(-1)
 
 
 @serialized_control

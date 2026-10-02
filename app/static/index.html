@@ -434,12 +434,62 @@
 
         .telemetry-values > :nth-last-child(-n+2) { border-bottom: none; }
 
+        /* HOME recovery: paired directional jogs + distinct completion action */
+        .home-recovery-group {
+            grid-column: 1 / -1;
+            display: none;
+            margin-top: 2px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(148,163,184,0.18);
+        }
+
+        .home-recovery-title {
+            color: #F59E0B;
+            font-size: 13px;
+            font-weight: bold;
+            text-align: center;
+            letter-spacing: 0.04em;
+            margin-bottom: 12px;
+        }
+
+        .home-recovery-jogs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .home-recovery-jog {
+            min-height: 62px;
+            font-size: 15px;
+        }
+
+        .home-recovery-retract { background: #16A34A; }
+        .home-recovery-deploy { background: #2563EB; }
+
+        .home-recovery-distance {
+            display: block;
+            margin-top: 4px;
+            font-size: 12px;
+            font-weight: normal;
+            opacity: 0.85;
+        }
+
+        .home-recovery-finish {
+            width: 100%;
+            min-height: 52px;
+            margin-top: 10px;
+            background: #F59E0B;
+            color: #0F172A;
+            font-size: 14px;
+        }
+
         @media (max-width: 620px) {
             .controls,
             .setup-controls,
             .telemetry-grid,
             .depth-grid,
-            .depth-actions {
+            .depth-actions,
+            .home-recovery-jogs {
                 grid-template-columns: 1fr;
             }
 
@@ -533,14 +583,25 @@
                 onclick="startHomeRecovery()" style="display:none;">
                 START HOME RECOVERY
             </button>
-            <button id="home-recovery-jog-button" class="setup-button safety-reset-button"
-                onclick="homeRecoveryJog()" style="display:none;">
-                RETRACT JOG (~3 CM)
-            </button>
-            <button id="home-recovery-finish-button" class="setup-button initialize-button"
-                onclick="finishHomeRecovery()" style="display:none;">
-                FINISH HOME RECOVERY
-            </button>
+            <div id="home-recovery-group" class="home-recovery-group">
+                <div class="home-recovery-title">HOME RECOVERY</div>
+                <div class="home-recovery-jogs">
+                    <button id="home-recovery-jog-button" class="home-recovery-jog home-recovery-retract"
+                        onclick="homeRecoveryJog('retract')">
+                        ▲ RETRACT
+                        <span class="home-recovery-distance">~3 cm per jog</span>
+                    </button>
+                    <button id="home-recovery-deploy-button" class="home-recovery-jog home-recovery-deploy"
+                        onclick="homeRecoveryJog('deploy')">
+                        ▼ DEPLOY
+                        <span class="home-recovery-distance">~3 cm per jog</span>
+                    </button>
+                </div>
+                <button id="home-recovery-finish-button" class="home-recovery-finish"
+                    onclick="finishHomeRecovery()">
+                    FINISH HOME RECOVERY
+                </button>
+            </div>
 
             <button
                 id="lock-toggle-button"
@@ -710,7 +771,9 @@
     const torqueDisableButton = document.getElementById("torque-disable-button");
     const safetyResetButton = document.getElementById("safety-reset-button");
     const homeRecoveryStartButton = document.getElementById("home-recovery-start-button");
+    const homeRecoveryGroup = document.getElementById("home-recovery-group");
     const homeRecoveryJogButton = document.getElementById("home-recovery-jog-button");
+    const homeRecoveryDeployButton = document.getElementById("home-recovery-deploy-button");
     const homeRecoveryFinishButton = document.getElementById("home-recovery-finish-button");
     const lockToggleButton = document.getElementById("lock-toggle-button");
 
@@ -854,10 +917,10 @@
         // remain disabled; recovery motion is slow and encoder-bounded per click.
         homeRecoveryStartButton.style.display =
             (motorConnected && !motorInitialized && !homeRecoveryMode) ? "block" : "none";
-        homeRecoveryJogButton.style.display = homeRecoveryMode ? "block" : "none";
-        homeRecoveryFinishButton.style.display = homeRecoveryMode ? "block" : "none";
+        homeRecoveryGroup.style.display = homeRecoveryMode ? "block" : "none";
         homeRecoveryStartButton.disabled = !motorConnected || motorInitialized;
         homeRecoveryJogButton.disabled = !motorConnected || !homeRecoveryMode;
+        homeRecoveryDeployButton.disabled = !motorConnected || !homeRecoveryMode;
         homeRecoveryFinishButton.disabled = !motorConnected || !homeRecoveryMode;
 
         const motionEnabled =
@@ -911,7 +974,7 @@
         if (retractLimit?.fault) {
             status.textContent = "SAFETY FAULT";
             status.style.color = "#EF4444";
-            directionText.textContent = retractLimit.fault;
+            directionText.textContent = "Winch protection engaged — reset or recover HOME";
         }
         else if (retractLimit?.stopping && data.velocity === 0) {
             status.textContent = "STOPPING";
@@ -1144,8 +1207,13 @@
             }
             applyState(data);
             await refreshDepth();
+            if (data.home_recovery_required === true) {
+                await startHomeRecovery();
+            }
         } catch (error) {
-            showError(`Safety reset error: ${error.message}`);
+            // Recovery failures are represented by the normal status widgets.
+            // Do not expose low-level Dynamixel/encoder strings to the operator.
+            clearError();
             await refreshState();
         }
     }
@@ -1153,26 +1221,30 @@
 
     async function startHomeRecovery() {
         clearError();
-        if (!window.confirm("HOME RECOVERY has no automatic HOME limit. Use only to retrieve a CTD when HOME is lost. Motion will be RETRACT-only, slow, and bounded per jog. Continue?")) return;
+        if (!window.confirm("HOME RECOVERY has no automatic HOME limit. Use only to retrieve a CTD when HOME is lost. RETRACT and DEPLOY are slow and bounded to ~3 cm per jog. Continue?")) return;
         try {
             const data = await apiRequest("/motor/home-recovery/start", "POST");
             if (!data.success) throw new Error(data.error || "Could not start HOME recovery");
             applyState(data);
         } catch (error) {
-            showError(`HOME recovery error: ${error.message}`);
+            clearError();
             await refreshState();
         }
     }
 
-    async function homeRecoveryJog() {
+    async function homeRecoveryJog(direction) {
         clearError();
         homeRecoveryJogButton.disabled = true;
+        homeRecoveryDeployButton.disabled = true;
         try {
-            const data = await apiRequest("/motor/home-recovery/jog", "POST");
+            const endpoint = direction === "deploy"
+                ? "/motor/home-recovery/deploy"
+                : "/motor/home-recovery/retract";
+            const data = await apiRequest(endpoint, "POST");
             if (!data.success) throw new Error(data.error || "Recovery jog failed");
             applyState(data);
         } catch (error) {
-            showError(`HOME recovery jog error: ${error.message}`);
+            clearError();
             await refreshState();
         }
     }
@@ -1185,7 +1257,7 @@
             if (!data.success) throw new Error(data.error || "Could not finish HOME recovery");
             applyState(data);
         } catch (error) {
-            showError(`HOME recovery error: ${error.message}`);
+            clearError();
             await refreshState();
         }
     }
@@ -1290,7 +1362,7 @@
         } else if (phase === "fault") {
             depthControlState.textContent = "● DEPTH CONTROL FAULT";
             depthControlState.className = "depth-warning";
-            depthControlDetail.textContent = data.last_error || "Automatic depth control stopped.";
+            depthControlDetail.textContent = "Automatic depth control stopped.";
         } else {
             depthControlState.textContent = "● IDLE";
             depthControlState.className = "depth-idle";

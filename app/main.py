@@ -76,8 +76,23 @@ def start_home_recovery() -> dict:
 
 @post("/motor/home-recovery/jog", sync_to_thread=True)
 def home_recovery_jog() -> dict:
+    # Backward-compatible alias: the original recovery jog retracts.
     try:
         return control.home_recovery_retract_jog()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-recovery/retract", sync_to_thread=True)
+def home_recovery_retract() -> dict:
+    try:
+        return control.home_recovery_retract_jog()
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+@post("/motor/home-recovery/deploy", sync_to_thread=True)
+def home_recovery_deploy() -> dict:
+    try:
+        return control.home_recovery_deploy_jog()
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
@@ -212,6 +227,8 @@ app = Litestar(
         recover_winch_hardware,
         start_home_recovery,
         home_recovery_jog,
+        home_recovery_retract,
+        home_recovery_deploy,
         finish_home_recovery,
         disable_torque,
         toggle_lock,
