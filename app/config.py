@@ -18,6 +18,7 @@ WINCH_BAUDRATE = 1_000_000
 ADDR_OPERATING_MODE = 11
 ADDR_DRIVE_MODE = 10
 ADDR_TORQUE_ENABLE = 64
+ADDR_HARDWARE_ERROR_STATUS = 70
 ADDR_GOAL_VELOCITY = 104
 ADDR_PROFILE_ACCELERATION = 108
 
@@ -150,8 +151,9 @@ CABLE_NOMINAL_LENGTH_M = 200.0
 # OPERATIONAL HOME ADJUSTMENT
 # ============================================================
 
-# INITIALIZE captures the hard retract safety reference.
-# ADJUST HOME changes only the operational storage position.
+# INITIALIZE captures the first hard retract safety reference.
+# SET HOME HERE deliberately rebases both calibrated HOME and the hard retract
+# reference at the operator-confirmed physical storage position.
 #
 # HOME adjustment uses small ~1 cm jogs.
 HOME_ADJUST_JOG_M = 0.01
@@ -207,15 +209,10 @@ STORAGE_SLOW_VELOCITY = 40
 STORAGE_CREEP_VELOCITY = 20
 
 # Dedicated return-to-storage profile.
+# Keep the original storage speeds: the independent retract-safety braking
+# envelope remains the final authority near HOME.
 HOME_NORMAL_VELOCITY = 60
-
-# Dedicated precision approach for RETURN TO STORAGE.
-# Speed level 1 (20) has a conservative braking envelope of about 2 cm with the
-# current model, so use a much lower velocity for the final 10 cm. The normal
-# retract safety remains fully active and will still stop before encoder zero.
-HOME_FINAL_APPROACH_M = 0.10
-HOME_FINAL_VELOCITY = 5
-HOME_TOLERANCE_M = 0.0
+HOME_TOLERANCE_M = 0.02
 
 
 # ============================================================

@@ -888,6 +888,7 @@
     let safetyFault = null;
     let safetyFaultRecoverable = false;
     let winchHardwareError = false;
+    let winchHardwareErrors = [];
     let homeRecoveryMode = false;
     let homeRecoveryRequired = false;
     let homeAdjustMode = false;
@@ -993,6 +994,9 @@
         safetyResetButton.textContent = hardwareRecoveryAvailable
             ? "RECOVER WINCH HARDWARE"
             : "RESET SAFETY FAULT";
+        safetyResetButton.title = hardwareRecoveryAvailable && winchHardwareErrors.length
+            ? `Hardware Error Status: ${winchHardwareErrors.join(", ")}`
+            : "";
         safetyResetButton.disabled = !motorConnected || !recoveryAvailable;
 
         // HOME recovery is exceptional: expose it only after software explicitly
@@ -1201,6 +1205,9 @@
             const data = await apiRequest("/motor/ping");
             motorConnected = data.connected === true;
             winchHardwareError = data.winch_hardware_error === true;
+            winchHardwareErrors = Array.isArray(data.winch_hardware_errors)
+                ? data.winch_hardware_errors
+                : [];
 
             if (motorConnected) {
                 connectionElement.textContent = "● CONNECTED";
@@ -1213,6 +1220,7 @@
         catch (error) {
             motorConnected = false;
             winchHardwareError = false;
+            winchHardwareErrors = [];
             connectionElement.textContent = "● DISCONNECTED";
             connectionElement.className = "disconnected";
         }

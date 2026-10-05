@@ -168,10 +168,8 @@ def _run_home(generation):
             control.require_winch_ready()
             payout, _, _ = _sample()
 
-            # HOME is encoder zero. Normal retract protection remains active, so
-            # the final position is still determined by the safety braking envelope.
-            # A dedicated very-low-speed final approach makes that envelope much
-            # smaller than the ~2 cm envelope produced by speed level 1.
+            # The independent retract-safety braking envelope may stop a small
+            # distance before encoder zero. Treat that as a safe stored position.
             if state.retract_limit.reached or payout <= config.HOME_TOLERANCE_M:
                 control.execute_stop()
                 state.depth.phase = 'home_reached'
@@ -179,10 +177,7 @@ def _run_home(generation):
                 state.depth.active = False
                 return
 
-            if payout <= config.HOME_FINAL_APPROACH_M:
-                velocity = config.HOME_FINAL_VELOCITY
-                phase = 'homing_final'
-            elif payout <= config.STORAGE_CREEP_PAYOUT_M:
+            if payout <= config.STORAGE_CREEP_PAYOUT_M:
                 velocity = config.STORAGE_CREEP_VELOCITY
                 phase = 'homing_creep'
             elif payout <= config.STORAGE_SLOWDOWN_PAYOUT_M:

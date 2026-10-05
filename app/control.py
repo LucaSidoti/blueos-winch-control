@@ -335,8 +335,37 @@ def execute_deploy() -> dict:
     return _execute_direction(1)
 
 
+def _decode_hardware_error_status(value: int) -> list[str]:
+    """Decode Dynamixel X-series Hardware Error Status (control-table address 70)."""
+    labels = (
+        (0x01, 'input voltage'),
+        (0x04, 'overheating'),
+        (0x08, 'motor encoder'),
+        (0x10, 'electrical shock'),
+        (0x20, 'overload'),
+    )
+    errors = [label for bit, label in labels if value & bit]
+    known_mask = sum(bit for bit, _ in labels)
+    unknown = value & ~known_mask
+    if unknown:
+        errors.append(f'unknown bits 0x{unknown:02X}')
+    return errors
+
+
+def _read_hardware_status(bus, motor_id: int, *, action: str) -> dict:
+    """Read the actual hardware-fault register even when the Alert bit is latched."""
+    raw = bus.read_hardware_error_status(motor_id, action=action)
+    value = int(raw['value'])
+    return {
+        'value': value,
+        'errors': _decode_hardware_error_status(value),
+        'device_error': raw['device_error'],
+        'device_error_text': raw['device_error_text'],
+    }
+
+
 def ping_motor() -> dict:
-    """Ping both Dynamixels and keep device faults distinct from disconnection."""
+    """Ping both Dynamixels and report their actual Hardware Error Status."""
     result = {
         'success': True,
         'connected': False,
@@ -353,8 +382,21 @@ def ping_motor() -> dict:
                 winch = bus.ping_status(config.WINCH_ID, action='Ping winch motor')
                 result['winch_connected'] = True
                 result['winch_model_number'] = winch['model']
-                result['winch_hardware_error'] = bool(winch['device_error'])
                 result['winch_error'] = winch['device_error_text']
+                try:
+                    hw = _read_hardware_status(
+                        bus, config.WINCH_ID, action='Read winch hardware error status',
+                    )
+                    result['winch_hardware_status'] = hw['value']
+                    result['winch_hardware_errors'] = hw['errors']
+                    # Only the dedicated control-table register defines a hardware
+                    # fault.  A generic non-zero PING status byte alone does not.
+                    result['winch_hardware_error'] = bool(hw['value'])
+                except Exception as hw_exc:
+                    # Diagnostic read failure must not turn a responding motor into
+                    # DISCONNECTED. Fall back conservatively to the PING status.
+                    result['winch_hardware_error'] = bool(winch['device_error'])
+                    result['winch_hardware_status_error'] = str(hw_exc)
             except Exception as exc:
                 result['winch_error'] = str(exc)
 
@@ -363,8 +405,17 @@ def ping_motor() -> dict:
                 lock = bus.ping_status(config.LOCK_ID, action='Ping lock motor')
                 result['lock_connected'] = True
                 result['lock_model_number'] = lock['model']
-                result['lock_hardware_error'] = bool(lock['device_error'])
                 result['lock_error'] = lock['device_error_text']
+                try:
+                    hw = _read_hardware_status(
+                        bus, config.LOCK_ID, action='Read lock hardware error status',
+                    )
+                    result['lock_hardware_status'] = hw['value']
+                    result['lock_hardware_errors'] = hw['errors']
+                    result['lock_hardware_error'] = bool(hw['value'])
+                except Exception as hw_exc:
+                    result['lock_hardware_error'] = bool(lock['device_error'])
+                    result['lock_hardware_status_error'] = str(hw_exc)
             except Exception as exc:
                 result['lock_error'] = str(exc)
     except Exception as exc:
@@ -906,19 +957,43 @@ def home_adjust_deploy_jog() -> dict:
 
 @serialized_control
 def set_operational_home_here() -> dict:
-    """Set the current position as both calibrated HOME and hard retract reference."""
+    """Confirm physical HOME, lock the load, rebase HOME, then remove winch torque.
+
+    HOME calibration can finish with the CTD pressed firmly into its storage.
+    Leaving XW540 torque enabled there can keep the motor loaded until its hardware
+    protection trips.  Finish calibration in the passive-safe stored state instead:
+    stop -> engage pawl -> settle -> capture the locked HOME -> disable XW540 torque.
+    """
     if not state.home_adjust_mode:
         raise RuntimeError('Start ADJUST HOME first')
     _require_home_adjust_ready()
     with motor_bus.session(state.bus_lock) as bus:
         bus.set_baudrate(config.WINCH_BAUDRATE)
-        # Rebase the retract protection at the operator-confirmed physical HOME.
-        # capture_reference() verifies the winch is stationary, resets the
-        # continuous payout coordinate to zero, and keeps the safety monitor active.
+        bus.set_velocity(config.WINCH_ID, 0, action='Stop winch before setting HOME')
+        state.motion.direction = 0
+        state.motion.velocity = 0
+        state.motion.speed_level = 0
+
+        # Let the spring-loaded pawl take the load first. Any tiny settling motion
+        # happens before HOME is captured, so encoder zero matches the final locked
+        # storage position rather than the pre-lock position.
+        retract_safety.engage_mechanical_lock(bus)
+        time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
+
+        bus.set_baudrate(config.WINCH_BAUDRATE)
         retract_safety.capture_reference(bus)
+        bus.set_torque(
+            config.WINCH_ID,
+            config.TORQUE_DISABLE,
+            action='Disable winch torque after setting HOME',
+        )
+
     state.operational_home_counts = 0
     state.home_adjust_mode = False
     state.home_adjust_start_counts = None
+    state.torque_enabled = False
+    state.lock_state = 'locked'
+    state.retract_limit.stopping = False
     state.depth.phase = 'idle'
     state.depth.last_error = None
     return get_motor_state()

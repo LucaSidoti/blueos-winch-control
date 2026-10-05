@@ -43,6 +43,25 @@ class MotorBus:
         self._check(result, error, action)
         return value
 
+    def read_register_status(self, motor_id, address, size, *, action):
+        """Read a register while preserving the device status-byte diagnostic.
+
+        Hardware-shutdown Dynamixels can answer normally while setting the Alert
+        bit in every status packet.  For diagnostics we must still accept the
+        returned register value; transport failures remain fatal.
+        """
+        if size not in (1, 2, 4):
+            raise ValueError("Register size must be 1, 2, or 4 bytes")
+        read = getattr(self.packet, f"read{size}ByteTxRx")
+        value, result, error = read(self.port, motor_id, address)
+        if result != COMM_SUCCESS:
+            raise RuntimeError(f"{action}: {self.packet.getTxRxResult(result)}")
+        return {
+            "value": int(value),
+            "device_error": int(error),
+            "device_error_text": self.packet.getRxPacketError(error) if error else None,
+        }
+
     def write_register(self, motor_id, address, value, size, *, action, checked=True):
         if size not in (1, 2, 4):
             raise ValueError("Register size must be 1, 2, or 4 bytes")
@@ -147,6 +166,14 @@ class MotorBus:
 
     def read_torque(self, motor_id, *, action):
         return self.read_register(motor_id, config.ADDR_TORQUE_ENABLE, 1, action=action)
+
+    def read_hardware_error_status(self, motor_id, *, action):
+        return self.read_register_status(
+            motor_id,
+            config.ADDR_HARDWARE_ERROR_STATUS,
+            1,
+            action=action,
+        )
 
     def read_drive_mode(self, motor_id, *, action):
         return self.read_register(motor_id, config.ADDR_DRIVE_MODE, 1, action=action)
