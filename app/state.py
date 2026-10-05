@@ -48,7 +48,10 @@ class ApplicationState:
     home_recovery_mode: bool = False
     home_recovery_required: bool = False
     home_adjust_mode: bool = False
-    operational_home_counts: int = 0  # Adjustable storage HOME relative to hard retract reference.
+    # Snapshot of the continuous payout coordinate when ADJUST HOME starts.
+    # CANCEL uses this to physically return to the pre-adjustment position.
+    home_adjust_start_counts: int | None = None
+    operational_home_counts: int = 0  # Calibrated HOME; SET HOME HERE also rebases the hard retract reference.
     bus_lock: object = field(default_factory=RLock, repr=False)
 
 state = ApplicationState()

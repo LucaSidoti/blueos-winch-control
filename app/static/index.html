@@ -669,7 +669,7 @@
                 </div>
                 <div class="home-adjust-actions">
                     <button id="home-adjust-set-button" class="home-adjust-set" onclick="setHomeHere()">SET HOME HERE</button>
-                    <button id="home-adjust-cancel-button" class="home-adjust-cancel" onclick="cancelHomeAdjustment()">CANCEL</button>
+                    <button id="home-adjust-cancel-button" class="home-adjust-cancel" onclick="cancelHomeAdjustment()">CANCEL &amp; RESTORE</button>
                 </div>
             </div>
 
@@ -1065,10 +1065,24 @@
         }
 
         const retractLimit = data.retract_limit;
-        if (retractLimit?.fault && (motorInitialized || homeRecoveryRequired)) {
+        // Use one fault priority everywhere in the UI so the status banner and
+        // recovery button cannot present contradictory fault states.
+        const activeSafetyFault = Boolean(retractLimit?.fault) &&
+            (motorInitialized || homeRecoveryRequired);
+        if (activeSafetyFault && winchHardwareError) {
+            status.textContent = "SAFETY / HARDWARE FAULT";
+            status.style.color = "#EF4444";
+            directionText.textContent = "Winch protection and hardware fault detected — reset safety first";
+        }
+        else if (activeSafetyFault) {
             status.textContent = "SAFETY FAULT";
             status.style.color = "#EF4444";
             directionText.textContent = "Winch protection engaged — reset or recover HOME";
+        }
+        else if (winchHardwareError) {
+            status.textContent = "WINCH HARDWARE FAULT";
+            status.style.color = "#EF4444";
+            directionText.textContent = "Dynamixel hardware fault detected — recover winch hardware";
         }
         else if (retractLimit?.stopping && data.velocity === 0) {
             status.textContent = "STOPPING";
@@ -1407,6 +1421,7 @@
     async function cancelHomeAdjustment() {
         clearError();
         try {
+            if (!window.confirm("Cancel HOME adjustment and automatically return to the position where adjustment started?")) return;
             const data = await apiRequest("/motor/home-adjust/cancel", "POST");
             if (!data.success) throw new Error(data.error || "Could not cancel HOME adjustment");
             applyState(data);

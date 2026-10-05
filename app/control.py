@@ -779,19 +779,35 @@ def home_recovery_deploy_jog() -> dict:
 
 @serialized_control
 def finish_home_recovery() -> dict:
-    """Stop, engage pawl, disable XW540 torque, and exit recovery mode."""
+    """Confirm the recovered physical HOME and rebuild all position references.
+
+    Normal operation is not restored until the current stationary position has
+    become a fresh retract reference/HOME.  The pawl is then engaged and XW540
+    torque is disabled so no stale pre-reboot encoder/reference state survives.
+    """
     if not state.home_recovery_mode:
         raise RuntimeError('HOME recovery is not active')
     with motor_bus.session(state.bus_lock) as bus:
         bus.set_baudrate(config.WINCH_BAUDRATE)
         bus.set_velocity(config.WINCH_ID, 0, action='Stop HOME recovery')
+        time.sleep(config.HOME_ADJUST_JOG_POLL_INTERVAL)
+
+        # The operator presses FINISH only when the CTD is physically at HOME.
+        # Rebuild the hard retract reference and continuous payout coordinate
+        # atomically from this confirmed position before normal operation resumes.
+        retract_safety.capture_reference(bus)
+        state.operational_home_counts = 0
+        state.initialized = True
+
         retract_safety.engage_mechanical_lock(bus)
         time.sleep(config.LOCK_ENGAGE_SETTLE_DELAY)
         bus.set_baudrate(config.WINCH_BAUDRATE)
         bus.set_torque(config.WINCH_ID, config.TORQUE_DISABLE, action='Disable winch torque after HOME recovery')
+
     state.home_recovery_mode = False
     state.home_recovery_required = False
     state.home_adjust_mode = False
+    state.home_adjust_start_counts = None
     state.torque_enabled = False
     state.lock_state = 'locked'
     state.motion.direction = 0
@@ -820,6 +836,7 @@ def _require_home_adjust_ready():
 def start_home_adjustment() -> dict:
     """Enter fine HOME calibration mode. SET HOME HERE will move the hard reference."""
     _require_home_adjust_ready()
+    state.home_adjust_start_counts = state.retract_limit.deployed_counts
     state.home_adjust_mode = True
     return get_motor_state()
 
@@ -901,6 +918,7 @@ def set_operational_home_here() -> dict:
         retract_safety.capture_reference(bus)
     state.operational_home_counts = 0
     state.home_adjust_mode = False
+    state.home_adjust_start_counts = None
     state.depth.phase = 'idle'
     state.depth.last_error = None
     return get_motor_state()
@@ -908,10 +926,54 @@ def set_operational_home_here() -> dict:
 
 @serialized_control
 def cancel_home_adjustment() -> dict:
-    """Leave HOME adjustment without changing the stored operational HOME."""
-    if state.motion.velocity != 0:
-        execute_stop()
+    """Discard calibration changes by returning to the pre-adjustment position.
+
+    HOME-adjust retract jogs may intentionally cross the existing hard reference.
+    Therefore CANCEL must restore the physical position before normal retract-limit
+    monitoring is allowed to resume; merely leaving the mode would create an
+    inconsistent encoder/reference state.
+    """
+    if not state.home_adjust_mode:
+        raise RuntimeError('HOME adjustment is not active')
+    _require_home_adjust_ready()
+    target = state.home_adjust_start_counts
+    if target is None:
+        raise RuntimeError('HOME adjustment start position is unavailable')
+
+    with motor_bus.session(state.bus_lock) as bus:
+        bus.set_baudrate(config.WINCH_BAUDRATE)
+        retract_safety.read_feedback(bus)
+        deadline = time.monotonic() + config.HOME_ADJUST_CANCEL_TIMEOUT
+        try:
+            while True:
+                error = state.retract_limit.deployed_counts - target
+                if abs(error) <= config.HOME_ADJUST_CANCEL_TOLERANCE_COUNTS:
+                    break
+                # Positive payout error means CTD is too deployed -> retract.
+                command = config.HOME_ADJUST_JOG_VELOCITY if error > 0 else -config.HOME_ADJUST_JOG_VELOCITY
+                bus.set_velocity(config.WINCH_ID, command, action='Restore pre-adjustment HOME position')
+                state.motion.velocity = command
+                state.motion.direction = -1 if command > 0 else 1
+                raw = bus.read_position(config.WINCH_ID, action='Read HOME cancel return position')
+                retract_safety.update_position(raw)
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Timed out while restoring the pre-adjustment position')
+                time.sleep(config.HOME_ADJUST_JOG_POLL_INTERVAL)
+            bus.set_velocity(config.WINCH_ID, 0, action='Stop HOME adjustment cancel return')
+        except Exception:
+            try:
+                bus.set_velocity(config.WINCH_ID, 0, action='Emergency stop HOME adjustment cancel return')
+            except Exception:
+                pass
+            raise
+        finally:
+            state.motion.direction = 0
+            state.motion.velocity = 0
+            state.motion.speed_level = 0
+
     state.home_adjust_mode = False
+    state.home_adjust_start_counts = None
+    state.retract_limit.stopping = False
     return get_motor_state()
 
 def _configure_winch(bus):

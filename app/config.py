@@ -170,6 +170,11 @@ HOME_ADJUST_JOG_COUNTS = max(
 HOME_ADJUST_JOG_TIMEOUT = 2.0
 HOME_ADJUST_JOG_POLL_INTERVAL = 0.02
 
+# CANCEL returns to the physical position where ADJUST HOME was entered before
+# restoring normal safety monitoring.
+HOME_ADJUST_CANCEL_TIMEOUT = 20.0
+HOME_ADJUST_CANCEL_TOLERANCE_COUNTS = 8
+
 
 # ============================================================
 # DEPTH CONTROL
@@ -203,7 +208,14 @@ STORAGE_CREEP_VELOCITY = 20
 
 # Dedicated return-to-storage profile.
 HOME_NORMAL_VELOCITY = 60
-HOME_TOLERANCE_M = 0.02
+
+# Dedicated precision approach for RETURN TO STORAGE.
+# Speed level 1 (20) has a conservative braking envelope of about 2 cm with the
+# current model, so use a much lower velocity for the final 10 cm. The normal
+# retract safety remains fully active and will still stop before encoder zero.
+HOME_FINAL_APPROACH_M = 0.10
+HOME_FINAL_VELOCITY = 5
+HOME_TOLERANCE_M = 0.0
 
 
 # ============================================================
