@@ -7,6 +7,7 @@ from litestar.static_files.config import StaticFilesConfig
 import config
 import control
 import depth_control
+from ctd_mission import CTDMissionCoordinator
 from mavlink_bridge import mavlink_listener
 
 # ============================================================
@@ -243,6 +244,29 @@ def cancel_depth_target() -> dict:
         return {"success": False, "error": str(exc)}
 
 # ============================================================
+# CTD MISSION CONFIGURATION (READ-ONLY PROTOTYPE)
+# ============================================================
+
+CTD_CONFIG_PATH = Path("/app/ctd_stations.json")
+ctd_coordinator = CTDMissionCoordinator()
+
+@get("/ctd/mission", sync_to_thread=False)
+def ctd_mission_status() -> dict:
+    return ctd_coordinator.status()
+
+@post("/ctd/mission/load", sync_to_thread=True)
+def load_ctd_mission() -> dict:
+    try:
+        result = ctd_coordinator.load(CTD_CONFIG_PATH)
+        return {"success": True, **result}
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            **ctd_coordinator.status(),
+        }
+
+# ============================================================
 # START MAVLINK LISTENER
 # ============================================================
 
@@ -285,6 +309,8 @@ app = Litestar(
         set_depth_target,
         return_home,
         cancel_depth_target,
+        ctd_mission_status,
+        load_ctd_mission,
     ],
     static_files_config=[
         StaticFilesConfig(
