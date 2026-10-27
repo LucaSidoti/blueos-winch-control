@@ -254,7 +254,13 @@ ctd_coordinator = CTDMissionCoordinator()
 @get("/ctd/mission/monitor", sync_to_thread=False)
 def ctd_mission_monitor() -> dict:
     """Read-only MAVLink mission progress; never triggers CTD execution."""
-    return mission_monitor.snapshot()
+    telemetry = mission_monitor.snapshot()
+    telemetry["stationMatch"] = ctd_coordinator.match_sequence(
+        telemetry["currentSequence"], telemetry["telemetryFresh"]
+    )
+    telemetry["stationReached"] = False
+    telemetry["missionValidated"] = False
+    return telemetry
 
 @get("/ctd/mission", sync_to_thread=False)
 def ctd_mission_status() -> dict:
