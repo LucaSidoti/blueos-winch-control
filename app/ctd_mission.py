@@ -7,6 +7,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 
 
 @dataclass(frozen=True)
@@ -97,19 +98,32 @@ class CTDMissionCoordinator:
     def __init__(self):
         self._stations: list[CTDStation] = []
         self._source: str | None = None
+        self._lock = RLock()
 
     def load(self, path: str | Path) -> dict:
         # Validate first; retain the previous configuration on failure.
         stations = load_config(path)
-        self._stations = stations
-        self._source = str(path)
-        return self.status()
+        return self._replace(stations, str(path))
+
+    def load_data(self, data: dict) -> dict:
+        """Validate and activate an HTTP-supplied configuration in memory."""
+        stations = validate_config(data)
+        return self._replace(stations, "http_upload")
+
+    def _replace(self, stations: list[CTDStation], source: str) -> dict:
+        with self._lock:
+            self._stations = stations
+            self._source = source
+            return self.status()
 
     def status(self) -> dict:
+        with self._lock:
+            stations = list(self._stations)
+            source = self._source
         return {
             "mode": "configuration_only",
             "executionEnabled": False,
-            "source": self._source,
-            "stationCount": len(self._stations),
-            "stations": [station.to_dict() for station in self._stations],
+            "source": source,
+            "stationCount": len(stations),
+            "stations": [station.to_dict() for station in stations],
         }

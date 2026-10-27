@@ -266,6 +266,19 @@ def load_ctd_mission() -> dict:
             **ctd_coordinator.status(),
         }
 
+@post("/ctd/mission/config", sync_to_thread=True)
+def upload_ctd_mission_config(data: dict) -> dict:
+    """Validate an uploaded station list; never actuate motors or MAVLink."""
+    try:
+        result = ctd_coordinator.load_data(data)
+        return {"success": True, **result}
+    except (ValueError, TypeError) as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            **ctd_coordinator.status(),
+        }
+
 # ============================================================
 # START MAVLINK LISTENER
 # ============================================================
@@ -311,6 +324,7 @@ app = Litestar(
         cancel_depth_target,
         ctd_mission_status,
         load_ctd_mission,
+        upload_ctd_mission_config,
     ],
     static_files_config=[
         StaticFilesConfig(
