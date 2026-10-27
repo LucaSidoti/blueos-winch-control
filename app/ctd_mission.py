@@ -116,6 +116,10 @@ class CTDMissionCoordinator:
             self._source = "http_upload"
         return self.status()
 
+    def stations_snapshot(self) -> list[CTDStation]:
+        with self._lock:
+            return list(self._stations)
+
     def match_sequence(self, sequence: int | None, fresh: bool) -> dict | None:
         """Identify a configured item, not physical arrival or sampling readiness."""
         if not fresh or sequence is None:

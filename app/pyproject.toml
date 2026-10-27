@@ -22,4 +22,5 @@ py-modules = [
     "retract_safety",
     "depth_control",
     "ctd_mission",
+    "mission_audit",
 ]

@@ -9,6 +9,7 @@ import control
 import depth_control
 from ctd_mission import CTDMissionCoordinator
 from mavlink_bridge import mavlink_listener
+from mission_audit import mission_audit
 from state import mission_monitor
 
 # ============================================================
@@ -259,8 +260,24 @@ def ctd_mission_monitor() -> dict:
         telemetry["currentSequence"], telemetry["telemetryFresh"]
     )
     telemetry["stationReached"] = False
-    telemetry["missionValidated"] = False
+    telemetry["missionValidated"] = mission_audit.snapshot()["missionValidated"]
     return telemetry
+
+@get("/ctd/mission/validation", sync_to_thread=False)
+def ctd_mission_validation() -> dict:
+    return mission_audit.snapshot()
+
+@post("/ctd/mission/validation/request", sync_to_thread=False)
+def request_ctd_mission_validation() -> dict:
+    """Request a read-only MAVLink mission download; never changes vehicle state."""
+    source = mission_monitor.snapshot()
+    if not source["telemetryFresh"]:
+        return {"success": False, "error": "Autopilot telemetry is stale"}
+    success, error = mission_audit.start(
+        ctd_coordinator.stations_snapshot(),
+        source["sourceSystem"], source["sourceComponent"],
+    )
+    return {"success": success, "error": error, **mission_audit.snapshot()}
 
 @get("/ctd/mission", sync_to_thread=False)
 def ctd_mission_status() -> dict:
@@ -270,6 +287,7 @@ def ctd_mission_status() -> dict:
 def load_ctd_mission() -> dict:
     try:
         result = ctd_coordinator.load(CTD_CONFIG_PATH)
+        mission_audit.invalidate()
         return {"success": True, **result}
     except (OSError, ValueError, TypeError) as exc:
         return {
@@ -283,6 +301,7 @@ def upload_ctd_mission_config(data: dict) -> dict:
     """Validate an uploaded station list; never actuate motors or MAVLink."""
     try:
         result = ctd_coordinator.load_data(data)
+        mission_audit.invalidate()
         return {"success": True, **result}
     except (ValueError, TypeError) as exc:
         return {
@@ -336,6 +355,8 @@ app = Litestar(
         cancel_depth_target,
         ctd_mission_status,
         ctd_mission_monitor,
+        ctd_mission_validation,
+        request_ctd_mission_validation,
         load_ctd_mission,
         upload_ctd_mission_config,
     ],

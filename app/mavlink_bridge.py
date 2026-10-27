@@ -5,6 +5,7 @@ import config
 import control
 import depth_control
 from state import mission_monitor
+from mission_audit import mission_audit
 
 # ============================================================
 # MAVLINK HELPERS
@@ -66,8 +67,9 @@ def mavlink_listener():
 
     while True:
         try:
+            mission_audit.tick(connection)
             message = connection.recv_match(
-                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT"],
+                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_ACK"],
                 blocking=True,
                 timeout=1,
             )
@@ -81,6 +83,10 @@ def mavlink_listener():
                     int(message.get_srcSystem()),
                     int(message.get_srcComponent()),
                 )
+                continue
+
+            if message.get_type() != "SERVO_OUTPUT_RAW":
+                mission_audit.receive(message)
                 continue
 
             target_system = message.get_srcSystem()
