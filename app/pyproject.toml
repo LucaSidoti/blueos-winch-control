@@ -23,4 +23,5 @@ py-modules = [
     "depth_control",
     "ctd_mission",
     "mission_audit",
+    "ctd_simulation",
 ]
