@@ -4,6 +4,7 @@ from pymavlink import mavutil
 import config
 import control
 import depth_control
+from state import mission_monitor
 
 # ============================================================
 # MAVLINK HELPERS
@@ -66,12 +67,20 @@ def mavlink_listener():
     while True:
         try:
             message = connection.recv_match(
-                type="SERVO_OUTPUT_RAW",
+                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT"],
                 blocking=True,
                 timeout=1,
             )
 
             if message is None:
+                continue
+
+            if message.get_type() == "MISSION_CURRENT":
+                mission_monitor.update(
+                    int(message.seq),
+                    int(message.get_srcSystem()),
+                    int(message.get_srcComponent()),
+                )
                 continue
 
             target_system = message.get_srcSystem()

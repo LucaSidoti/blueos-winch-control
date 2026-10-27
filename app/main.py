@@ -9,6 +9,7 @@ import control
 import depth_control
 from ctd_mission import CTDMissionCoordinator
 from mavlink_bridge import mavlink_listener
+from state import mission_monitor
 
 # ============================================================
 # GENERAL STATUS
@@ -250,6 +251,11 @@ def cancel_depth_target() -> dict:
 CTD_CONFIG_PATH = Path("/app/ctd_stations.json")
 ctd_coordinator = CTDMissionCoordinator()
 
+@get("/ctd/mission/monitor", sync_to_thread=False)
+def ctd_mission_monitor() -> dict:
+    """Read-only MAVLink mission progress; never triggers CTD execution."""
+    return mission_monitor.snapshot()
+
 @get("/ctd/mission", sync_to_thread=False)
 def ctd_mission_status() -> dict:
     return ctd_coordinator.status()
@@ -323,6 +329,7 @@ app = Litestar(
         return_home,
         cancel_depth_target,
         ctd_mission_status,
+        ctd_mission_monitor,
         load_ctd_mission,
         upload_ctd_mission_config,
     ],
