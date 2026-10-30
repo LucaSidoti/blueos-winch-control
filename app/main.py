@@ -254,9 +254,8 @@ def cancel_depth_target() -> dict:
 CTD_CONFIG_PATH = Path("/app/ctd_stations.json")
 ctd_coordinator = CTDMissionCoordinator()
 
-@get("/ctd/mission/monitor", sync_to_thread=False)
-def ctd_mission_monitor() -> dict:
-    """Read-only MAVLink mission progress; never triggers CTD execution."""
+def _ctd_monitor_snapshot() -> dict:
+    """Shared read-only snapshot; callable independently of Litestar routes."""
     telemetry = mission_monitor.snapshot()
     telemetry["stationMatch"] = ctd_coordinator.match_sequence(
         telemetry["currentSequence"], telemetry["telemetryFresh"]
@@ -265,11 +264,17 @@ def ctd_mission_monitor() -> dict:
     telemetry["missionValidated"] = mission_audit.snapshot()["missionValidated"]
     return telemetry
 
+
+@get("/ctd/mission/monitor", sync_to_thread=False)
+def ctd_mission_monitor() -> dict:
+    """Read-only MAVLink mission progress; never triggers CTD execution."""
+    return _ctd_monitor_snapshot()
+
 @get("/ctd/mission/coordination", sync_to_thread=False)
 def ctd_mission_coordination() -> dict:
     """Read-only mission readiness. Never authorizes autonomous execution."""
     try:
-        telemetry = ctd_mission_monitor()
+        telemetry = _ctd_monitor_snapshot()
         audit = mission_audit.snapshot()
         config_status = ctd_coordinator.status()
 
