@@ -6,6 +6,7 @@ import control
 import depth_control
 from state import mission_monitor
 from mission_audit import mission_audit
+from ctd_observation import ctd_position_monitor
 
 # ============================================================
 # MAVLINK HELPERS
@@ -69,12 +70,16 @@ def mavlink_listener():
         try:
             mission_audit.tick(connection)
             message = connection.recv_match(
-                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_ACK"],
+                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_ACK", "GLOBAL_POSITION_INT"],
                 blocking=True,
                 timeout=1,
             )
 
             if message is None:
+                continue
+
+            if message.get_type() == "GLOBAL_POSITION_INT":
+                ctd_position_monitor.update_global_position(message)
                 continue
 
             if message.get_type() == "MISSION_CURRENT":

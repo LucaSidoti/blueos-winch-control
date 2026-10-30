@@ -13,6 +13,7 @@ from mavlink_bridge import mavlink_listener
 from mission_audit import mission_audit
 from ctd_simulation import ctd_simulator
 from state import mission_monitor
+from ctd_observation import ctd_position_monitor
 
 # ============================================================
 # GENERAL STATUS
@@ -321,6 +322,40 @@ def ctd_mission_coordination() -> dict:
             "note": "Coordination status unavailable; inspect BlueOS extension logs.",
         }
 
+@get("/ctd/mission/arrival-observation", sync_to_thread=False)
+def ctd_arrival_observation() -> dict:
+    """Read-only position/speed diagnostics; never triggers a winch command."""
+    monitor = _ctd_monitor_snapshot()
+    match = monitor.get("stationMatch")
+    station = None
+    if isinstance(match, dict):
+        # Station match may be a partial dictionary; only use actual coordinates.
+        station = match if "latitude" in match and "longitude" in match else None
+    if station is None:
+        sequence = monitor.get("currentSequence")
+        if monitor.get("telemetryFresh") and sequence is not None:
+            for candidate in ctd_coordinator.status().get("stations", []):
+                if sequence in (candidate.get("waypointSequence"), candidate.get("loiterSequence")):
+                    station = candidate
+                    break
+    source = (monitor.get("sourceSystem"), monitor.get("sourceComponent"))
+    position = ctd_position_monitor.snapshot(station, expected_source=source)
+    return {
+        "mode": "read_only_arrival_observation",
+        "executionEnabled": False,
+        "automaticWinchEnabled": False,
+        "automaticAdvanceEnabled": False,
+        "missionValidated": bool(monitor.get("missionValidated")),
+        "missionTelemetryFresh": bool(monitor.get("telemetryFresh")),
+        "currentSequence": monitor.get("currentSequence"),
+        "station": station,
+        "atLoiterSequence": bool(station and monitor.get("currentSequence") == station.get("loiterSequence")),
+        **position,
+        "arrivalConfirmed": False,
+        "note": "Instantaneous GPS and speed do not confirm sustained station keeping or authorize deployment.",
+    }
+
+
 @get("/ctd/mission/validation", sync_to_thread=False)
 def ctd_mission_validation() -> dict:
     return mission_audit.snapshot()
@@ -442,6 +477,7 @@ app = Litestar(
         ctd_simulation_abort,
         ctd_mission_monitor,
         ctd_mission_coordination,
+        ctd_arrival_observation,
         ctd_mission_validation,
         request_ctd_mission_validation,
         load_ctd_mission,
