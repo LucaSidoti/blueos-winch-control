@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import logging
 from pathlib import Path
 from threading import Thread
 from litestar import Litestar, get, post
@@ -266,30 +267,54 @@ def ctd_mission_monitor() -> dict:
 
 @get("/ctd/mission/coordination", sync_to_thread=False)
 def ctd_mission_coordination() -> dict:
-    """Single read-only readiness/progress view for QGC and BlueOS."""
-    telemetry = ctd_mission_monitor()
-    audit = mission_audit.snapshot()
-    match = telemetry["stationMatch"]
-    configured = ctd_coordinator.status()["stationCount"] > 0
-    validated = bool(audit["missionValidated"])
-    fresh = bool(telemetry["telemetryFresh"])
-    ready = configured and validated and fresh
-    return {
-        "mode": "supervised_observation",
-        "executionEnabled": False,
-        "automaticWinchEnabled": False,
-        "automaticAdvanceEnabled": False,
-        "configurationLoaded": configured,
-        "missionValidated": validated,
-        "telemetryFresh": fresh,
-        "readyForObservation": ready,
-        "readyForAutonomousExecution": False,
-        "currentSequence": telemetry["currentSequence"],
-        "stationMatch": match,
-        "phase": ("loiter_observed" if match and match["atLoiterSequence"]
-                  else "approaching_station" if match else "unmatched_or_stale"),
-        "note": "Sequence observation alone does not prove arrival or safe station keeping.",
-    }
+    """Read-only mission readiness. Never authorizes autonomous execution."""
+    try:
+        telemetry = ctd_mission_monitor()
+        audit = mission_audit.snapshot()
+        config_status = ctd_coordinator.status()
+
+        match = telemetry.get("stationMatch")
+        configured = bool(config_status.get("stationCount", 0))
+        validated = bool(audit.get("missionValidated", False))
+        fresh = bool(telemetry.get("telemetryFresh", False))
+        ready = configured and validated and fresh
+        at_loiter = isinstance(match, dict) and bool(match.get("atLoiterSequence"))
+
+        return {
+            "mode": "supervised_observation",
+            "executionEnabled": False,
+            "automaticWinchEnabled": False,
+            "automaticAdvanceEnabled": False,
+            "configurationLoaded": configured,
+            "missionValidated": validated,
+            "telemetryFresh": fresh,
+            "readyForObservation": ready,
+            "readyForAutonomousExecution": False,
+            "currentSequence": telemetry.get("currentSequence"),
+            "stationMatch": match,
+            "phase": ("loiter_observed" if at_loiter
+                      else "approaching_station" if match else "unmatched_or_stale"),
+            "note": "Sequence observation alone does not prove arrival or safe station keeping.",
+        }
+    except Exception:
+        # Log the complete traceback inside the container, but do not expose
+        # internal implementation details to unauthenticated HTTP clients.
+        logging.exception("CTD coordination endpoint failed")
+        return {
+            "mode": "supervised_observation",
+            "executionEnabled": False,
+            "automaticWinchEnabled": False,
+            "automaticAdvanceEnabled": False,
+            "configurationLoaded": False,
+            "missionValidated": False,
+            "telemetryFresh": False,
+            "readyForObservation": False,
+            "readyForAutonomousExecution": False,
+            "currentSequence": None,
+            "stationMatch": None,
+            "phase": "error",
+            "note": "Coordination status unavailable; inspect BlueOS extension logs.",
+        }
 
 @get("/ctd/mission/validation", sync_to_thread=False)
 def ctd_mission_validation() -> dict:
