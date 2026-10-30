@@ -7,7 +7,6 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from threading import RLock
 
 
 @dataclass(frozen=True)
@@ -98,49 +97,42 @@ class CTDMissionCoordinator:
     def __init__(self):
         self._stations: list[CTDStation] = []
         self._source: str | None = None
-        self._lock = RLock()
 
     def load(self, path: str | Path) -> dict:
         # Validate first; retain the previous configuration on failure.
         stations = load_config(path)
-        with self._lock:
-            self._stations = stations
-            self._source = str(path)
+        self._stations = stations
+        self._source = str(path)
         return self.status()
 
     def load_data(self, data: dict) -> dict:
-        """Validate and replace the in-memory configuration received from QGC."""
+        """Accept validated QGC JSON without touching actuators or MAVLink."""
         stations = validate_config(data)
-        with self._lock:
-            self._stations = stations
-            self._source = "http_upload"
+        self._stations = stations
+        self._source = "qgc_http"
         return self.status()
 
     def stations_snapshot(self) -> list[CTDStation]:
-        with self._lock:
-            return list(self._stations)
+        return list(self._stations)
 
     def match_sequence(self, sequence: int | None, fresh: bool) -> dict | None:
-        """Identify a configured item, not physical arrival or sampling readiness."""
         if not fresh or sequence is None:
             return None
-        with self._lock:
-            for index, station in enumerate(self._stations, start=1):
-                if sequence == station.waypoint_sequence:
-                    phase = "waypoint_sequence_observed"
-                elif sequence == station.loiter_sequence:
-                    phase = "loiter_sequence_observed"
-                else:
-                    continue
-                return {"stationIndex": index, "phase": phase, **station.to_dict()}
+        for index, station in enumerate(self._stations):
+            if sequence in (station.waypoint_sequence, station.loiter_sequence):
+                return {
+                    "stationIndex": index,
+                    "stationNumber": index + 1,
+                    "station": station.to_dict(),
+                    "atLoiterSequence": sequence == station.loiter_sequence,
+                }
         return None
 
     def status(self) -> dict:
-        with self._lock:
-            return {
-                "mode": "configuration_only",
-                "executionEnabled": False,
-                "source": self._source,
-                "stationCount": len(self._stations),
-                "stations": [station.to_dict() for station in self._stations],
+        return {
+            "mode": "configuration_only",
+            "executionEnabled": False,
+            "source": self._source,
+            "stationCount": len(self._stations),
+            "stations": [station.to_dict() for station in self._stations],
         }

@@ -264,6 +264,33 @@ def ctd_mission_monitor() -> dict:
     telemetry["missionValidated"] = mission_audit.snapshot()["missionValidated"]
     return telemetry
 
+@get("/ctd/mission/coordination", sync_to_thread=False)
+def ctd_mission_coordination() -> dict:
+    """Single read-only readiness/progress view for QGC and BlueOS."""
+    telemetry = ctd_mission_monitor()
+    audit = mission_audit.snapshot()
+    match = telemetry["stationMatch"]
+    configured = ctd_coordinator.status()["stationCount"] > 0
+    validated = bool(audit["missionValidated"])
+    fresh = bool(telemetry["telemetryFresh"])
+    ready = configured and validated and fresh
+    return {
+        "mode": "supervised_observation",
+        "executionEnabled": False,
+        "automaticWinchEnabled": False,
+        "automaticAdvanceEnabled": False,
+        "configurationLoaded": configured,
+        "missionValidated": validated,
+        "telemetryFresh": fresh,
+        "readyForObservation": ready,
+        "readyForAutonomousExecution": False,
+        "currentSequence": telemetry["currentSequence"],
+        "stationMatch": match,
+        "phase": ("loiter_observed" if match and match["atLoiterSequence"]
+                  else "approaching_station" if match else "unmatched_or_stale"),
+        "note": "Sequence observation alone does not prove arrival or safe station keeping.",
+    }
+
 @get("/ctd/mission/validation", sync_to_thread=False)
 def ctd_mission_validation() -> dict:
     return mission_audit.snapshot()
@@ -384,6 +411,7 @@ app = Litestar(
         ctd_simulation_advance,
         ctd_simulation_abort,
         ctd_mission_monitor,
+        ctd_mission_coordination,
         ctd_mission_validation,
         request_ctd_mission_validation,
         load_ctd_mission,
