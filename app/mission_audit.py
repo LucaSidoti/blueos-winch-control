@@ -154,6 +154,7 @@ class MissionAudit:
         with self.lock:
             return {
                 'status': self.phase,
+                'auditGeneration': self.generation,
                 'missionValidated': (self.phase == 'complete' and self.result['valid']
                                      and self.completed_at is not None
                                      and time.monotonic() - self.completed_at <= 60),

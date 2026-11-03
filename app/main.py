@@ -14,6 +14,7 @@ from mission_audit import mission_audit
 from ctd_simulation import ctd_simulator
 from state import mission_monitor
 from ctd_observation import ctd_position_monitor
+from ctd_live_preview import live_ctd_preview
 
 # ============================================================
 # GENERAL STATUS
@@ -348,6 +349,17 @@ def ctd_arrival_observation() -> dict:
     }
 
 
+@get("/ctd/mission/lifecycle-preview", sync_to_thread=False)
+def ctd_lifecycle_preview() -> dict:
+    """Passive, hardware-disabled preview using actual mission/GPS observations."""
+    return live_ctd_preview.observe(
+        stations=ctd_coordinator.status().get("stations", []),
+        audit=mission_audit.snapshot(),
+        mission=mission_monitor.snapshot(),
+        position_monitor=ctd_position_monitor,
+    )
+
+
 @get("/ctd/mission/validation", sync_to_thread=False)
 def ctd_mission_validation() -> dict:
     return mission_audit.snapshot()
@@ -395,6 +407,7 @@ def load_ctd_mission() -> dict:
     try:
         result = ctd_coordinator.load(CTD_CONFIG_PATH)
         mission_audit.invalidate()
+        live_ctd_preview.reset()
         ctd_simulator.reset()
         return {"success": True, **result}
     except (OSError, ValueError, TypeError) as exc:
@@ -410,6 +423,7 @@ def upload_ctd_mission_config(data: dict) -> dict:
     try:
         result = ctd_coordinator.load_data(data)
         mission_audit.invalidate()
+        live_ctd_preview.reset()
         ctd_simulator.reset()
         return {"success": True, **result}
     except (ValueError, TypeError) as exc:
@@ -470,6 +484,7 @@ app = Litestar(
         ctd_mission_monitor,
         ctd_mission_coordination,
         ctd_arrival_observation,
+        ctd_lifecycle_preview,
         ctd_mission_validation,
         request_ctd_mission_validation,
         load_ctd_mission,
