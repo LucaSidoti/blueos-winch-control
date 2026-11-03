@@ -324,35 +324,27 @@ def ctd_mission_coordination() -> dict:
 
 @get("/ctd/mission/arrival-observation", sync_to_thread=False)
 def ctd_arrival_observation() -> dict:
-    """Read-only position/speed diagnostics; never triggers a winch command."""
+    """Read-only arrival evidence. No motor or mission commands."""
     monitor = _ctd_monitor_snapshot()
     match = monitor.get("stationMatch")
-    station = None
-    if isinstance(match, dict):
-        # Station match may be a partial dictionary; only use actual coordinates.
-        station = match if "latitude" in match and "longitude" in match else None
-    if station is None:
-        sequence = monitor.get("currentSequence")
-        if monitor.get("telemetryFresh") and sequence is not None:
-            for candidate in ctd_coordinator.status().get("stations", []):
-                if sequence in (candidate.get("waypointSequence"), candidate.get("loiterSequence")):
-                    station = candidate
-                    break
+    station = match.get("station") if isinstance(match, dict) else None
+    at_loiter = bool(match and match.get("atLoiterSequence"))
     source = (monitor.get("sourceSystem"), monitor.get("sourceComponent"))
     position = ctd_position_monitor.snapshot(station, expected_source=source)
+    arrival = ctd_position_monitor.sustained_arrival(
+        station, expected_source=source, at_loiter=at_loiter,
+        mission_validated=bool(monitor.get("missionValidated")),
+        mission_fresh=bool(monitor.get("telemetryFresh")),
+        sequence_entered=monitor.get("sequenceEnteredMonotonic"))
     return {
-        "mode": "read_only_arrival_observation",
-        "executionEnabled": False,
-        "automaticWinchEnabled": False,
-        "automaticAdvanceEnabled": False,
+        "mode": "read_only_arrival_observation", "executionEnabled": False,
+        "automaticWinchEnabled": False, "automaticAdvanceEnabled": False,
         "missionValidated": bool(monitor.get("missionValidated")),
         "missionTelemetryFresh": bool(monitor.get("telemetryFresh")),
         "currentSequence": monitor.get("currentSequence"),
-        "station": station,
-        "atLoiterSequence": bool(station and monitor.get("currentSequence") == station.get("loiterSequence")),
-        **position,
-        "arrivalConfirmed": False,
-        "note": "Instantaneous GPS and speed do not confirm sustained station keeping or authorize deployment.",
+        "station": station, "atLoiterSequence": at_loiter,
+        **position, **arrival,
+        "note": "Arrival is observational only. No deployment or mission advance is authorized.",
     }
 
 
