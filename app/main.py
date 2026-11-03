@@ -15,6 +15,10 @@ from ctd_simulation import ctd_simulator
 from state import mission_monitor
 from ctd_observation import ctd_position_monitor
 from ctd_live_preview import live_ctd_preview
+from ctd_auto_validation import auto_validation
+from ctd_readiness import snapshot as ctd_readiness_snapshot
+from ctd_gps_fix import ctd_gps_fix_monitor
+import time
 
 # ============================================================
 # GENERAL STATUS
@@ -360,6 +364,31 @@ def ctd_lifecycle_preview() -> dict:
     )
 
 
+@get("/ctd/mission/autovalidation", sync_to_thread=False)
+def ctd_autovalidation_status() -> dict:
+    return {**auto_validation.snapshot(), "audit": mission_audit.snapshot()}
+
+
+@get("/ctd/mission/hardware-readiness", sync_to_thread=False)
+def ctd_hardware_readiness() -> dict:
+    mission = mission_monitor.snapshot()
+    gps = ctd_gps_fix_monitor.snapshot(expected_source=(mission.get("sourceSystem"), mission.get("sourceComponent")))
+    return ctd_readiness_snapshot(mission=mission, audit=mission_audit.snapshot(),
+                                  gps=gps, depth_status=depth_control.get_status(read_position=False))
+
+
+def _ctd_auto_validation_worker():
+    while True:
+        try:
+            phase = live_ctd_preview.engine.snapshot().get("lifecycle")
+            auto_validation.tick(audit=mission_audit, coordinator=ctd_coordinator,
+                                 mission=mission_monitor.snapshot(),
+                                 preview_phase=phase.get("phase") if phase else None)
+        except Exception:
+            logging.exception("CTD automatic mission readback failed")
+        time.sleep(2.0)
+
+
 @get("/ctd/mission/validation", sync_to_thread=False)
 def ctd_mission_validation() -> dict:
     return mission_audit.snapshot()
@@ -443,6 +472,9 @@ mavlink_thread = Thread(
 )
 mavlink_thread.start()
 
+ctd_validation_thread = Thread(target=_ctd_auto_validation_worker, daemon=True)
+ctd_validation_thread.start()
+
 # ============================================================
 # APPLICATION
 # ============================================================
@@ -485,6 +517,8 @@ app = Litestar(
         ctd_mission_coordination,
         ctd_arrival_observation,
         ctd_lifecycle_preview,
+        ctd_autovalidation_status,
+        ctd_hardware_readiness,
         ctd_mission_validation,
         request_ctd_mission_validation,
         load_ctd_mission,
