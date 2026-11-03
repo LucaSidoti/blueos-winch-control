@@ -17,6 +17,7 @@ from ctd_observation import ctd_position_monitor
 from ctd_live_preview import live_ctd_preview
 from ctd_auto_validation import auto_validation
 from ctd_readiness import snapshot as ctd_readiness_snapshot
+from ctd_encoder_feedback import assess as assess_ctd_encoder_home
 from ctd_gps_fix import ctd_gps_fix_monitor
 import time
 
@@ -369,6 +370,18 @@ def ctd_autovalidation_status() -> dict:
     return {**auto_validation.snapshot(), "audit": mission_audit.snapshot()}
 
 
+@get("/ctd/mission/encoder-home-check", sync_to_thread=True)
+def ctd_encoder_home_check() -> dict:
+    """On-demand fresh encoder read; no motor commands or mission changes."""
+    try:
+        result = depth_control.get_status(read_position=True)
+        return assess_ctd_encoder_home(result, sampled_at=time.monotonic())
+    except Exception as exc:
+        return {"mode": "encoder_feedback_diagnostics_only", "error": str(exc),
+                "encoderHomeCandidate": False, "homePhysicallyVerified": False,
+                "missionContinuationAuthorized": False}
+
+
 @get("/ctd/mission/hardware-readiness", sync_to_thread=False)
 def ctd_hardware_readiness() -> dict:
     mission = mission_monitor.snapshot()
@@ -519,6 +532,7 @@ app = Litestar(
         ctd_lifecycle_preview,
         ctd_autovalidation_status,
         ctd_hardware_readiness,
+        ctd_encoder_home_check,
         ctd_mission_validation,
         request_ctd_mission_validation,
         load_ctd_mission,
