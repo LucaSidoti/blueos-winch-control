@@ -4,6 +4,7 @@ Never calls get_status(read_position=True): that can initiate a motor-bus read.
 Cached encoder/depth state is *not* proof of physical HOME.
 """
 from state import state
+from ctd_command_ownership import ownership
 
 
 def snapshot(*, mission, audit, gps, depth_status):
@@ -20,7 +21,8 @@ def snapshot(*, mission, audit, gps, depth_status):
         'depthControlActive': bool(depth_status.get('active')),
         'cachedDepthMeters': depth_status.get('depth_m'),
         'homePhysicallyVerified': False,
-        'motorCommandOwnershipEnforced': False,
+        'motorCommandOwnershipEnforced': ownership.snapshot()['centralVelocityWriteGateEnabled'],
+        'autonomousOwnershipAvailable': False,
         'autonomousModeVerified': False,
         'missionContinuationHandshakeVerified': False,
         'readyForAutonomousExecution': False,

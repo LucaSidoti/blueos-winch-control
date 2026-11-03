@@ -63,6 +63,9 @@ class MotorBus:
         }
 
     def write_register(self, motor_id, address, value, size, *, action, checked=True):
+        if motor_id == config.WINCH_ID and address == config.ADDR_GOAL_VELOCITY:
+            from ctd_command_ownership import ownership
+            ownership.authorize(value & 0xffffffff)
         if size not in (1, 2, 4):
             raise ValueError("Register size must be 1, 2, or 4 bytes")
         write = getattr(self.packet, f"write{size}ByteTxRx")

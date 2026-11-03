@@ -18,6 +18,8 @@ from ctd_live_preview import live_ctd_preview
 from ctd_auto_validation import auto_validation
 from ctd_readiness import snapshot as ctd_readiness_snapshot
 from ctd_encoder_feedback import assess as assess_ctd_encoder_home
+from ctd_command_ownership import ownership
+from ctd_measured_velocity import read as read_ctd_measured_velocity
 from ctd_gps_fix import ctd_gps_fix_monitor
 import time
 
@@ -382,6 +384,16 @@ def ctd_encoder_home_check() -> dict:
                 "missionContinuationAuthorized": False}
 
 
+@get("/ctd/mission/motor-ownership", sync_to_thread=False)
+def ctd_motor_ownership() -> dict:
+    return ownership.snapshot()
+
+
+@get("/ctd/mission/measured-velocity", sync_to_thread=True)
+def ctd_measured_velocity() -> dict:
+    return read_ctd_measured_velocity()
+
+
 @get("/ctd/mission/hardware-readiness", sync_to_thread=False)
 def ctd_hardware_readiness() -> dict:
     mission = mission_monitor.snapshot()
@@ -533,6 +545,8 @@ app = Litestar(
         ctd_autovalidation_status,
         ctd_hardware_readiness,
         ctd_encoder_home_check,
+        ctd_motor_ownership,
+        ctd_measured_velocity,
         ctd_mission_validation,
         request_ctd_mission_validation,
         load_ctd_mission,
