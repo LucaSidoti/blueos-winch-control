@@ -73,8 +73,8 @@ def validate_config(data: dict) -> list[CTDStation]:
             raise ValueError(f"Station {index}: duplicate sequence number")
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             raise ValueError(f"Station {index}: coordinates out of range")
-        if not (0.5 <= depth <= 2.0):
-            raise ValueError(f"Station {index}: targetDepth must be 0.5 to 2.0 m")
+        if not (0.0 <= depth <= 2.0):
+            raise ValueError(f"Station {index}: targetDepth must be 0.0 to 2.0 m")
         if not (1 <= duration <= 3600):
             raise ValueError(f"Station {index}: samplingDuration must be 1 to 3600 s")
         stations.append(CTDStation(wp, loiter, lat, lon, depth, duration))
@@ -104,29 +104,6 @@ class CTDMissionCoordinator:
         self._stations = stations
         self._source = str(path)
         return self.status()
-
-    def load_data(self, data: dict) -> dict:
-        """Accept validated QGC JSON without touching actuators or MAVLink."""
-        stations = validate_config(data)
-        self._stations = stations
-        self._source = "qgc_http"
-        return self.status()
-
-    def stations_snapshot(self) -> list[CTDStation]:
-        return list(self._stations)
-
-    def match_sequence(self, sequence: int | None, fresh: bool) -> dict | None:
-        if not fresh or sequence is None:
-            return None
-        for index, station in enumerate(self._stations):
-            if sequence in (station.waypoint_sequence, station.loiter_sequence):
-                return {
-                    "stationIndex": index,
-                    "stationNumber": index + 1,
-                    "station": station.to_dict(),
-                    "atLoiterSequence": sequence == station.loiter_sequence,
-                }
-        return None
 
     def status(self) -> dict:
         return {

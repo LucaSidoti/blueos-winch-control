@@ -407,6 +407,10 @@ def ctd_rehearsal_status() -> dict:
 
 @post("/ctd/rehearsal/reset", sync_to_thread=False)
 def ctd_rehearsal_reset() -> dict:
+    if ctd_supervised_motion.cycle_snapshot().get("phase") in (
+            "armed_waiting_for_simulated_arrival", "deploying", "sampling",
+            "retracting", "verifying_home"):
+        return {"success": False, "error": "Stop active physical cycle before resetting rehearsal"}
     terminal_rehearsal.reset()
     return terminal_rehearsal.snapshot()
 
@@ -443,6 +447,18 @@ def ctd_rehearsal_tick() -> dict:
                                    audit=mission_audit.snapshot())
 
 
+@post("/ctd/rehearsal/next", sync_to_thread=False)
+def ctd_rehearsal_next() -> dict:
+    try:
+        if not mission_audit.snapshot().get("missionValidated") or not mission_monitor.snapshot().get("telemetryFresh"):
+            raise ValueError("Real mission evidence must remain valid")
+        return {"success": True, **terminal_rehearsal.advance(
+            mission=mission_monitor.snapshot(), audit=mission_audit.snapshot(),
+            physical_cycle=ctd_supervised_motion.cycle_snapshot())}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), **terminal_rehearsal.snapshot()}
+
+
 @get("/ctd/rehearsal/cycle", sync_to_thread=False)
 def ctd_hybrid_cycle_status() -> dict:
     return ctd_supervised_motion.cycle_snapshot()
@@ -459,8 +475,9 @@ def ctd_hybrid_cycle_arm(data: dict) -> dict:
             token=data.get('token'), confirmation=data.get('confirmation'),
             station=stations[index], mission=mission_monitor.snapshot(),
             audit=mission_audit.snapshot(),
-            test_depth_m=data.get('test_depth_m',0.2),
-            sample_seconds=data.get('sample_seconds',5))}
+            test_depth_m=data.get('test_depth_m', min(0.5, stations[index]['targetDepth'])),
+            sample_seconds=data.get('sample_seconds',min(15,stations[index]['samplingDuration'])),
+            rehearsal=terminal_rehearsal.snapshot())}
     except Exception as exc:
         return {'accepted':False,'error':str(exc), **ctd_supervised_motion.cycle_snapshot()}
 
@@ -648,6 +665,7 @@ app = Litestar(
         ctd_rehearsal_start,
         ctd_rehearsal_gps,
         ctd_rehearsal_tick,
+        ctd_rehearsal_next,
         ctd_bench_motion_status,
         ctd_bench_motion_target,
         ctd_bench_motion_stop,

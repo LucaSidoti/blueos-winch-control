@@ -116,7 +116,7 @@ def _cycle_set(phase, **values):
 
 
 def cycle_arm(*, token, confirmation, station, mission, audit,
-              test_depth_m=0.2, sample_seconds=5):
+              test_depth_m=0.2, sample_seconds=5, rehearsal=None):
     global _cycle_generation, _cycle
     secret = os.environ.get('CTD_BENCH_MOTION_TOKEN', '')
     import hmac
@@ -128,8 +128,14 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
         raise ValueError('Commissioning depth must be 0 to 0.5 m')
     if type(sample_seconds) is not int or not 1 <= sample_seconds <= 15:
         raise ValueError('Commissioning sampling duration must be 1 to 15 s')
-    if not audit.get('missionValidated') or not mission.get('telemetryFresh') or mission.get('currentSequence') != station['loiterSequence']:
-        raise ValueError('Real ArduPilot LOITER and mission validation required')
+    if not audit.get('missionValidated') or not mission.get('telemetryFresh'):
+        raise ValueError('Real ArduPilot mission validation and fresh telemetry required')
+    if rehearsal is None or rehearsal.get('station') != station:
+        raise ValueError('Matching indoor rehearsal required')
+    if rehearsal.get('virtualSequence') not in (station['waypointSequence'], station['loiterSequence']):
+        raise ValueError('Virtual navigation is not at selected station')
+    if rehearsal.get('stationIndex') in rehearsal.get('completedStationIndices', []):
+        raise ValueError('Station already completed')
     if not state.initialized or state.retract_limit.reference is None or state.retract_limit.fault:
         raise RuntimeError('Winch not initialized, calibrated or fault-free')
     if state.depth.active or state.motion.velocity != 0 or state.home_adjust_mode or state.home_recovery_mode:
@@ -147,6 +153,7 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
                   'samplingSeconds':sample_seconds,
                   'stationLatitude':station['latitude'],
                   'stationLongitude':station['longitude'],
+                  'stationIndex':rehearsal['stationIndex'],
                   'motorCommandsIssued':False,
                   'automaticAdvanceEnabled':False, 'error':None}
         return dict(_cycle)
@@ -160,14 +167,15 @@ def cycle_arrival(*, rehearsal, mission, audit):
         if rehearsal.get('rehearsal',{}).get('phase') != 'descending':
             return dict(_cycle)
         if (not mission.get('telemetryFresh') or not audit.get('missionValidated')
-                or mission.get('currentSequence') != _cycle['stationSequence']):
+                or rehearsal.get('virtualSequence') != _cycle['stationSequence']
+                or rehearsal.get('stationIndex') != _cycle['stationIndex']):
             _cycle.update(phase='fault',error='ArduPilot mission evidence lost before start')
             return dict(_cycle)
         ownership.acquire_bench_cycle()
         generation = _cycle['generation']
         _cycle['phase'] = 'deploying'
         _cycle['motorCommandsIssued'] = True
-        Thread(target=_cycle_worker,args=(generation,mission['currentSequence']),
+        Thread(target=_cycle_worker,args=(generation,_cycle['stationSequence']),
                name='ctd-attended-hybrid-cycle',daemon=True).start()
         return dict(_cycle)
 
@@ -181,7 +189,8 @@ def _cycle_worker(generation, sequence):
         audit = mission_audit.snapshot()
         gps = terminal_rehearsal.snapshot().get('simulatedGPS')
         if (not mission.get('telemetryFresh') or not audit.get('missionValidated')
-                or mission.get('currentSequence') != sequence):
+                or terminal_rehearsal.snapshot().get('virtualSequence') != sequence
+                or terminal_rehearsal.snapshot().get('stationIndex') != cycle_snapshot().get('stationIndex')):
             raise RuntimeError('ArduPilot mission/telemetry evidence lost')
         if (not gps or gps.get('ageSeconds', 1e6) > 2.0):
             raise RuntimeError('Terminal GPS injection lost')
@@ -276,7 +285,8 @@ def cycle_stop():
     with _cycle_lock:
         _cycle_generation += 1
         _cycle_stop.set()
-        _cycle['phase']='stopped'
+        if _cycle['phase'] not in ('complete', 'fault'):
+            _cycle['phase']='stopped'
     # STOP is always authorized; do not release motor ownership until worker exits.
     depth_control.cancel(stop=True)
     return cycle_snapshot()
