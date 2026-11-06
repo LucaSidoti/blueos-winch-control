@@ -195,7 +195,7 @@ def motor_state() -> dict:
 @post("/motor/stop", sync_to_thread=True)
 def stop_motor() -> dict:
     try:
-        depth_control.cancel(stop=False)
+        ctd_supervised_motion.cycle_stop()
         return control.execute_stop()
     except Exception as exc:
         return {
@@ -206,6 +206,8 @@ def stop_motor() -> dict:
 @post("/motor/retract", sync_to_thread=True)
 def command_retract() -> dict:
     try:
+        if ownership.snapshot()['owner'] != 'manual':
+            raise RuntimeError('CTD cycle owns winch; use STOP to abort')
         depth_control.cancel(stop=False)
         return control.execute_retract()
     except Exception as exc:
@@ -217,6 +219,8 @@ def command_retract() -> dict:
 @post("/motor/deploy", sync_to_thread=True)
 def command_deploy() -> dict:
     try:
+        if ownership.snapshot()['owner'] != 'manual':
+            raise RuntimeError('CTD cycle owns winch; use STOP to abort')
         depth_control.cancel(stop=False)
         return control.execute_deploy()
     except Exception as exc:
@@ -421,11 +425,14 @@ def ctd_rehearsal_start(data: dict) -> dict:
 @post("/ctd/rehearsal/gps", sync_to_thread=False)
 def ctd_rehearsal_gps(data: dict) -> dict:
     try:
-        return {"success": True, **terminal_rehearsal.inject(
+        result = terminal_rehearsal.inject(
             latitude=data.get("latitude"), longitude=data.get("longitude"),
             speed_m_s=data.get("speed_m_s", 0.0),
             depth_m=data.get("depth_m"), home=data.get("home", False),
-            mission=mission_monitor.snapshot(), audit=mission_audit.snapshot())}
+            mission=mission_monitor.snapshot(), audit=mission_audit.snapshot())
+        cycle = ctd_supervised_motion.cycle_arrival(
+            rehearsal=result,mission=mission_monitor.snapshot(),audit=mission_audit.snapshot())
+        return {"success":True, **result, "physicalCycle":cycle}
     except Exception as exc:
         return {"success": False, "error": str(exc), **terminal_rehearsal.snapshot()}
 
@@ -434,6 +441,33 @@ def ctd_rehearsal_gps(data: dict) -> dict:
 def ctd_rehearsal_tick() -> dict:
     return terminal_rehearsal.tick(mission=mission_monitor.snapshot(),
                                    audit=mission_audit.snapshot())
+
+
+@get("/ctd/rehearsal/cycle", sync_to_thread=False)
+def ctd_hybrid_cycle_status() -> dict:
+    return ctd_supervised_motion.cycle_snapshot()
+
+
+@post("/ctd/rehearsal/cycle/arm", sync_to_thread=True)
+def ctd_hybrid_cycle_arm(data: dict) -> dict:
+    try:
+        stations = ctd_coordinator.status().get('stations', [])
+        index = data.get('station_index', 0)
+        if type(index) is not int or not 0 <= index < len(stations):
+            raise ValueError('Invalid station index')
+        return {'accepted':True, **ctd_supervised_motion.cycle_arm(
+            token=data.get('token'), confirmation=data.get('confirmation'),
+            station=stations[index], mission=mission_monitor.snapshot(),
+            audit=mission_audit.snapshot(),
+            test_depth_m=data.get('test_depth_m',0.2),
+            sample_seconds=data.get('sample_seconds',5))}
+    except Exception as exc:
+        return {'accepted':False,'error':str(exc), **ctd_supervised_motion.cycle_snapshot()}
+
+
+@post("/ctd/rehearsal/cycle/stop", sync_to_thread=True)
+def ctd_hybrid_cycle_stop() -> dict:
+    return ctd_supervised_motion.cycle_stop()
 
 
 @get("/ctd/bench-motion", sync_to_thread=False)
@@ -606,6 +640,9 @@ app = Litestar(
         ctd_lifecycle_preview,
         ctd_autovalidation_status,
         ctd_hardware_readiness,
+        ctd_hybrid_cycle_status,
+        ctd_hybrid_cycle_arm,
+        ctd_hybrid_cycle_stop,
         ctd_rehearsal_status,
         ctd_rehearsal_reset,
         ctd_rehearsal_start,

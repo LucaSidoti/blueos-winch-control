@@ -4,6 +4,8 @@ from pymavlink import mavutil
 import config
 import control
 import depth_control
+import ctd_supervised_motion
+from ctd_command_ownership import ownership
 from state import mission_monitor
 from mission_audit import mission_audit
 from ctd_observation import ctd_position_monitor
@@ -129,6 +131,8 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    if ownership.snapshot()['owner'] != 'manual':
+                        raise RuntimeError('CTD cycle active; press STOP first')
                     depth_control.cancel(stop=False)
                     result = control.execute_retract()
                     print(
@@ -148,7 +152,7 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
-                    depth_control.cancel(stop=False)
+                    ctd_supervised_motion.cycle_stop()
                     control.execute_stop()
                     print(
                         "Winch stopped",
@@ -166,6 +170,8 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    if ownership.snapshot()['owner'] != 'manual':
+                        raise RuntimeError('CTD cycle active; press STOP first')
                     depth_control.cancel(stop=False)
                     result = control.execute_deploy()
                     print(

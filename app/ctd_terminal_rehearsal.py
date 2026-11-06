@@ -41,7 +41,7 @@ class CTDTerminalRehearsal:
             if mission.get("currentSequence") != station["loiterSequence"]:
                 raise ValueError("ArduPilot must report the selected CTD LOITER sequence")
             self.station = station
-            self.mission_key = (audit.get("auditGeneration"), mission.get("sourceSystem"),
+            self.mission_key = (mission.get("sourceSystem"),
                                 mission.get("sourceComponent"))
             self.engine = CTDLifecycle(station, stable_s=5.0)
             self.engine.start(time.monotonic())
@@ -78,7 +78,7 @@ class CTDTerminalRehearsal:
     def _step(self, mission, audit, now):
         if self.engine is None:
             return self.snapshot()
-        if (audit.get("auditGeneration"), mission.get("sourceSystem"),
+        if (mission.get("sourceSystem"),
             mission.get("sourceComponent")) != self.mission_key:
             self.engine._fail("Mission identity changed", now)
         if self.engine.phase.value == "fault":

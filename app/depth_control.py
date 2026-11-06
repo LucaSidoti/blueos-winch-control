@@ -14,6 +14,7 @@ import control
 import motor_bus
 import retract_safety
 from state import state
+from ctd_command_ownership import command_as, current_requester
 
 _worker = None
 _cancel = Event()
@@ -121,7 +122,7 @@ def _set_motion_state(command, velocity, phase):
         state.motion.speed_level = 0
 
 
-def _run_depth(generation):
+def _run_depth(generation, owner):
     """Bidirectional depth controller. HOME is never changed here."""
     try:
         while not _cancel.wait(config.DEPTH_CONTROL_POLL_INTERVAL):
@@ -153,13 +154,16 @@ def _run_depth(generation):
                     phase = 'retracting'
                 command = velocity
 
-            control.write_velocity(command)
+            if generation != _generation or _cancel.is_set() or not state.depth.active:
+                return
+            with command_as(owner):
+                control.write_velocity(command)
             _set_motion_state(command, velocity, phase)
     except Exception as exc:
         _fault(exc)
 
 
-def _run_home(generation):
+def _run_home(generation, owner):
     """Retract toward the adjustable operational storage HOME."""
     try:
         while not _cancel.wait(config.DEPTH_CONTROL_POLL_INTERVAL):
@@ -188,7 +192,10 @@ def _run_home(generation):
                 phase = 'homing'
 
             try:
-                control.write_velocity(velocity)
+                if generation != _generation or _cancel.is_set() or not state.depth.active:
+                    return
+                with command_as(owner):
+                    control.write_velocity(velocity)
             except RuntimeError as exc:
                 # Reaching the independent braking envelope is a successful,
                 # safe end condition for HOME, not a depth-control fault.
@@ -216,8 +223,15 @@ def _fault(exc):
 
 def _start_worker(mode, target_m=None):
     global _worker, _generation
+    from ctd_command_ownership import ownership
+    if ownership.snapshot()['owner'] != current_requester():
+        raise RuntimeError('Depth command blocked by active CTD cycle')
     control.require_winch_ready()
     cancel(stop=True)
+    if _worker is not None and _worker.is_alive():
+        _worker.join(timeout=2.0)
+        if _worker.is_alive():
+            raise RuntimeError('Previous depth worker has not stopped; refusing new motion')
     _generation += 1
     generation = _generation
     _cancel.clear()
@@ -228,7 +242,7 @@ def _start_worker(mode, target_m=None):
     state.depth.command_velocity = 0
     state.depth.last_error = None
     target = _run_home if mode == 'home' else _run_depth
-    _worker = Thread(target=target, args=(generation,), name=f'winch-{mode}-control', daemon=True)
+    _worker = Thread(target=target, args=(generation, current_requester()), name=f'winch-{mode}-control', daemon=True)
     _worker.start()
     return get_status(read_position=True)
 
