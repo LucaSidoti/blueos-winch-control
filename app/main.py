@@ -8,6 +8,8 @@ from litestar.static_files.config import StaticFilesConfig
 import config
 import control
 import depth_control
+import ctd_supervised_motion
+from ctd_terminal_rehearsal import terminal_rehearsal
 from ctd_mission import CTDMissionCoordinator
 from mavlink_bridge import mavlink_listener
 from mission_audit import mission_audit
@@ -394,6 +396,66 @@ def ctd_measured_velocity() -> dict:
     return read_ctd_measured_velocity()
 
 
+@get("/ctd/rehearsal", sync_to_thread=False)
+def ctd_rehearsal_status() -> dict:
+    return terminal_rehearsal.snapshot()
+
+
+@post("/ctd/rehearsal/reset", sync_to_thread=False)
+def ctd_rehearsal_reset() -> dict:
+    terminal_rehearsal.reset()
+    return terminal_rehearsal.snapshot()
+
+
+@post("/ctd/rehearsal/start", sync_to_thread=False)
+def ctd_rehearsal_start(data: dict) -> dict:
+    try:
+        return {"success": True, **terminal_rehearsal.start(
+            stations=ctd_coordinator.status().get("stations", []),
+            audit=mission_audit.snapshot(), mission=mission_monitor.snapshot(),
+            station_index=data.get("station_index", 0))}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), **terminal_rehearsal.snapshot()}
+
+
+@post("/ctd/rehearsal/gps", sync_to_thread=False)
+def ctd_rehearsal_gps(data: dict) -> dict:
+    try:
+        return {"success": True, **terminal_rehearsal.inject(
+            latitude=data.get("latitude"), longitude=data.get("longitude"),
+            speed_m_s=data.get("speed_m_s", 0.0),
+            depth_m=data.get("depth_m"), home=data.get("home", False),
+            mission=mission_monitor.snapshot(), audit=mission_audit.snapshot())}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), **terminal_rehearsal.snapshot()}
+
+
+@post("/ctd/rehearsal/tick", sync_to_thread=False)
+def ctd_rehearsal_tick() -> dict:
+    return terminal_rehearsal.tick(mission=mission_monitor.snapshot(),
+                                   audit=mission_audit.snapshot())
+
+
+@get("/ctd/bench-motion", sync_to_thread=False)
+def ctd_bench_motion_status() -> dict:
+    return ctd_supervised_motion.snapshot()
+
+
+@post("/ctd/bench-motion/target", sync_to_thread=True)
+def ctd_bench_motion_target(data: dict) -> dict:
+    try:
+        return ctd_supervised_motion.request(
+            data.get("depth_m"), token=data.get("token"),
+            confirmation=data.get("confirmation"))
+    except Exception as exc:
+        return {"accepted": False, "error": str(exc), **ctd_supervised_motion.snapshot()}
+
+
+@post("/ctd/bench-motion/stop", sync_to_thread=True)
+def ctd_bench_motion_stop() -> dict:
+    return ctd_supervised_motion.stop()
+
+
 @get("/ctd/mission/hardware-readiness", sync_to_thread=False)
 def ctd_hardware_readiness() -> dict:
     mission = mission_monitor.snapshot()
@@ -544,6 +606,14 @@ app = Litestar(
         ctd_lifecycle_preview,
         ctd_autovalidation_status,
         ctd_hardware_readiness,
+        ctd_rehearsal_status,
+        ctd_rehearsal_reset,
+        ctd_rehearsal_start,
+        ctd_rehearsal_gps,
+        ctd_rehearsal_tick,
+        ctd_bench_motion_status,
+        ctd_bench_motion_target,
+        ctd_bench_motion_stop,
         ctd_encoder_home_check,
         ctd_motor_ownership,
         ctd_measured_velocity,
