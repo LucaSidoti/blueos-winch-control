@@ -105,6 +105,13 @@ class CTDMissionCoordinator:
         self._source = str(path)
         return self.status()
 
+    def load_data(self, data: dict) -> dict:
+        """Validate an HTTP-uploaded QGC configuration and update station registry."""
+        stations = validate_config(data)
+        self._stations = stations
+        self._source = "qgc_http"
+        return self.status()
+
     def status(self) -> dict:
         return {
             "mode": "configuration_only",

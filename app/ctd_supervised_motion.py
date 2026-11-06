@@ -154,6 +154,7 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
                   'stationLatitude':station['latitude'],
                   'stationLongitude':station['longitude'],
                   'stationIndex':rehearsal['stationIndex'],
+                  'motorReleased':False,
                   'motorCommandsIssued':False,
                   'automaticAdvanceEnabled':False, 'error':None}
         return dict(_cycle)
@@ -263,7 +264,7 @@ def _cycle_worker(generation, sequence):
                 elif first is None:
                     first=time.monotonic()
                 elif time.monotonic()-first>=3.0:
-                    _cycle_set('complete',homeEncoderCandidate=True,
+                    _cycle_set('home_confirmed_pending_stop',homeEncoderCandidate=True,
                                homePhysicallyVerified=False,
                                missionContinuationAuthorized=False)
                     return
@@ -276,8 +277,14 @@ def _cycle_worker(generation, sequence):
         _cycle_stop.set()
         try:
             depth_control.cancel(stop=True)
+        except Exception as exc:
+            _cycle_set('fault', error='Final motor stop failed: ' + str(exc))
         finally:
             ownership.release_bench_cycle()
+            with _cycle_lock:
+                _cycle['motorReleased'] = True
+                if _cycle['phase'] == 'home_confirmed_pending_stop':
+                    _cycle['phase'] = 'complete'
 
 
 def cycle_stop():

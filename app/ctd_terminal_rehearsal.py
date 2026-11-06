@@ -64,6 +64,8 @@ class CTDTerminalRehearsal:
                 raise ValueError("ArduPilot identity changed")
             if physical_cycle.get("stationIndex") != self.station_index:
                 raise ValueError("Completed physical cycle belongs to another station")
+            if not physical_cycle.get("motorReleased", False):
+                raise ValueError("Winch command ownership not released")
             if physical_cycle.get("phase") != "complete":
                 raise ValueError("Physical cycle must complete before virtual station advancement")
             if self.station_index in self.completed:

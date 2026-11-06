@@ -576,6 +576,7 @@ def load_ctd_mission() -> dict:
         mission_audit.invalidate()
         live_ctd_preview.reset()
         ctd_simulator.reset()
+        terminal_rehearsal.reset()
         return {"success": True, **result}
     except (OSError, ValueError, TypeError) as exc:
         return {
@@ -588,10 +589,15 @@ def load_ctd_mission() -> dict:
 def upload_ctd_mission_config(data: dict) -> dict:
     """Validate an uploaded station list; never actuate motors or MAVLink."""
     try:
+        if ctd_supervised_motion.cycle_snapshot().get('phase') in (
+                'armed_waiting_for_simulated_arrival', 'deploying', 'sampling',
+                'retracting', 'verifying_home', 'home_confirmed_pending_stop'):
+            raise ValueError('Stop physical cycle before replacing CTD configuration')
         result = ctd_coordinator.load_data(data)
         mission_audit.invalidate()
         live_ctd_preview.reset()
         ctd_simulator.reset()
+        terminal_rehearsal.reset()
         return {"success": True, **result}
     except (ValueError, TypeError) as exc:
         return {
