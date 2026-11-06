@@ -120,3 +120,21 @@ class CTDMissionCoordinator:
             "stationCount": len(self._stations),
             "stations": [station.to_dict() for station in self._stations],
         }
+
+    def stations_snapshot(self) -> list[CTDStation]:
+        """Return a copy of the configured station list (read-only registry)."""
+        return list(self._stations)
+
+    def match_sequence(self, sequence: int | None, fresh: bool) -> dict | None:
+        """Match fresh ArduPilot mission progress to a configured CTD station."""
+        if not fresh or sequence is None:
+            return None
+        for index, station in enumerate(self._stations):
+            if sequence in (station.waypoint_sequence, station.loiter_sequence):
+                return {
+                    "stationIndex": index,
+                    "stationNumber": index + 1,
+                    "station": station.to_dict(),
+                    "atLoiterSequence": sequence == station.loiter_sequence,
+                }
+        return None
