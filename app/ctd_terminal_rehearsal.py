@@ -50,7 +50,7 @@ class CTDTerminalRehearsal:
             self.station = station
             self.mission_key = (mission.get("sourceSystem"),
                                 mission.get("sourceComponent"))
-            self.engine = CTDLifecycle(station, stable_s=5.0)
+            self.engine = CTDLifecycle(station, stable_s=5.0, descent_timeout_s=900, retract_timeout_s=900)
             self.engine.start(time.monotonic())
             self._event("rehearsal_started")
             return self.snapshot()
@@ -79,7 +79,7 @@ class CTDTerminalRehearsal:
             self.station_index += 1
             self.station = dict(self.stations[self.station_index])
             self.virtual_sequence = self.station["waypointSequence"]
-            self.engine = CTDLifecycle(self.station, stable_s=5.0)
+            self.engine = CTDLifecycle(self.station, stable_s=5.0, descent_timeout_s=900, retract_timeout_s=900)
             self.engine.start(time.monotonic())
             self.last_fix = None
             self.last_fix_at = None

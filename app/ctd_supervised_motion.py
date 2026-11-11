@@ -9,16 +9,37 @@ from threading import RLock, Thread, Event
 import depth_control
 from state import state
 
-MAX_DEPTH_M = 0.5
-MAX_RUN_S = 20.0
-# Max cycle: deploy + sample + retract + HOME verification, plus margin.
-# Require a newly completed readback before arming; never extend the 60 s TTL.
+MAX_DEPTH_M = 2.0  # V3 attended indoor ceiling; not an outdoor authorization
+MAX_RUN_S = 600.0  # finite emergency travel ceiling, NOT a normal motion deadline
+STALL_WINDOW_S = 18.0
+STALL_PROGRESS_M = 0.003  # minimum net progress in an 18 s window
+# Require a newly completed readback before arming.
 MAX_ARM_AUDIT_AGE_S = 5.0
 CYCLE_EVIDENCE_MARGIN_S = 2.0
 HOME_VERIFICATION_MAX_S = 6.0
 
 def _minimum_validation_remaining(sample_seconds):
     return 2 * MAX_RUN_S + sample_seconds + HOME_VERIFICATION_MAX_S + CYCLE_EVIDENCE_MARGIN_S
+
+
+class ProgressWatchdog:
+    """Fails closed on missing payout, backward travel, or no net progress."""
+    def __init__(self, direction, now, payout):
+        if not isinstance(payout, (int, float)) or not math.isfinite(payout):
+            raise RuntimeError('No finite encoder payout at movement start')
+        self.direction = direction
+        self.since = now
+        self.payout = payout
+
+    def update(self, now, payout):
+        if not isinstance(payout, (int, float)) or not math.isfinite(payout):
+            raise RuntimeError('Encoder payout unavailable during motion')
+        progress = (payout - self.payout) * self.direction
+        if progress >= STALL_PROGRESS_M:
+            self.since, self.payout = now, payout
+        elif now - self.since >= STALL_WINDOW_S:
+            raise RuntimeError('Winch progress stalled: less than %.3f m in %.0f s' % (STALL_PROGRESS_M, STALL_WINDOW_S))
+
 _lock = RLock()
 _generation = 0
 _status = {'phase': 'idle', 'note': 'Operator-supervised only'}
@@ -28,7 +49,7 @@ def snapshot():
     with _lock:
         return {**_status, 'automaticWinchEnabled': False,
                 'automaticAdvanceEnabled': False, 'maxTargetDepthMeters': MAX_DEPTH_M,
-                'maxMotionSeconds': MAX_RUN_S}
+                'maxMotionSeconds': MAX_RUN_S, 'stallWindowSeconds': STALL_WINDOW_S}
 
 
 def _watch(generation, deadline):
@@ -294,6 +315,10 @@ def _cycle_worker(generation, sequence):
                 check()
                 target=cycle_snapshot()['testDepthMeters']
                 depth_control.set_target(target)
+            initial=depth_control.get_status(read_position=True)
+            if not initial.get('success'):
+                raise RuntimeError('Initial movement encoder read failed')
+            progress=ProgressWatchdog(1, time.monotonic(), initial.get('cable_payout_m'))
             deadline=time.monotonic()+MAX_RUN_S
             while time.monotonic() < deadline:
                 check()
@@ -304,6 +329,7 @@ def _cycle_worker(generation, sequence):
                     if status.get('phase') != 'target_reached':
                         raise RuntimeError('Deployment ended without reaching target: '+str(status.get('phase')))
                     break
+                progress.update(time.monotonic(), status.get('cable_payout_m'))
                 time.sleep(0.15)
             else:
                 raise RuntimeError('Deployment timed out')
@@ -320,6 +346,10 @@ def _cycle_worker(generation, sequence):
                 check()
                 _cycle_set('retracting')
                 depth_control.go_home()
+            initial=depth_control.get_status(read_position=True)
+            if not initial.get('success'):
+                raise RuntimeError('Initial movement encoder read failed')
+            progress=ProgressWatchdog(-1, time.monotonic(), initial.get('cable_payout_m'))
             deadline=time.monotonic()+MAX_RUN_S
             while time.monotonic() < deadline:
                 check()
@@ -330,6 +360,7 @@ def _cycle_worker(generation, sequence):
                     if status.get('phase') != 'home_reached':
                         raise RuntimeError('Retraction ended without HOME: '+str(status.get('phase')))
                     break
+                progress.update(time.monotonic(), status.get('cable_payout_m'))
                 time.sleep(0.15)
             else:
                 raise RuntimeError('Retraction timed out')

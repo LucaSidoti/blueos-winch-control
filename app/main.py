@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from threading import Thread
+from threading import Thread, RLock
 from litestar import Litestar, get, post
 from litestar.static_files.config import StaticFilesConfig
 import config
@@ -267,6 +267,7 @@ def cancel_depth_target() -> dict:
 # ============================================================
 
 CTD_CONFIG_PATH = Path("/app/ctd_stations.json")
+_ctd_validation_arm_gate = RLock()
 ctd_coordinator = CTDMissionCoordinator()
 
 def _ctd_monitor_snapshot() -> dict:
@@ -471,11 +472,12 @@ def ctd_hybrid_cycle_arm(data: dict) -> dict:
         index = data.get('station_index', 0)
         if type(index) is not int or not 0 <= index < len(stations):
             raise ValueError('Invalid station index')
-        return {'accepted':True, **ctd_supervised_motion.cycle_arm(
+        with _ctd_validation_arm_gate:
+            return {'accepted':True, **ctd_supervised_motion.cycle_arm(
             token=data.get('token'), confirmation=data.get('confirmation'),
             station=stations[index], mission=mission_monitor.snapshot(),
             audit=mission_audit.snapshot(),
-            test_depth_m=data.get('test_depth_m', min(0.5, stations[index]['targetDepth'])),
+            test_depth_m=data.get('test_depth_m', min(2.0, stations[index]['targetDepth'])),
             sample_seconds=data.get('sample_seconds',min(15,stations[index]['samplingDuration'])),
             rehearsal=terminal_rehearsal.snapshot())}
     except Exception as exc:
@@ -519,7 +521,8 @@ def _ctd_auto_validation_worker():
     while True:
         try:
             phase = live_ctd_preview.engine.snapshot().get("lifecycle")
-            auto_validation.tick(audit=mission_audit, coordinator=ctd_coordinator,
+            with _ctd_validation_arm_gate:
+                auto_validation.tick(audit=mission_audit, coordinator=ctd_coordinator,
                                  mission=mission_monitor.snapshot(),
                                  preview_phase=phase.get("phase") if phase else None,
                                   physical_cycle_phase=ctd_supervised_motion.cycle_snapshot().get('phase'))
@@ -545,16 +548,17 @@ def _ctd_cycle_active():
 @post("/ctd/mission/validation/request", sync_to_thread=False)
 def request_ctd_mission_validation() -> dict:
     """Request a read-only MAVLink mission download; never changes vehicle state."""
-    if _ctd_cycle_active():
-        return {"success": False, "error": "Mission readback blocked while physical CTD cycle is armed or active"}
-    source = mission_monitor.snapshot()
-    if not source["telemetryFresh"]:
-        return {"success": False, "error": "Autopilot telemetry is stale"}
-    success, error = mission_audit.start(
-        ctd_coordinator.stations_snapshot(),
-        source["sourceSystem"], source["sourceComponent"],
-    )
-    return {"success": success, "error": error, **mission_audit.snapshot()}
+    with _ctd_validation_arm_gate:
+        if _ctd_cycle_active():
+            return {"success": False, "error": "Mission readback blocked while physical CTD cycle is armed or active"}
+        source = mission_monitor.snapshot()
+        if not source["telemetryFresh"]:
+            return {"success": False, "error": "Autopilot telemetry is stale"}
+        success, error = mission_audit.start(
+            ctd_coordinator.stations_snapshot(),
+            source["sourceSystem"], source["sourceComponent"],
+        )
+        return {"success": success, "error": error, **mission_audit.snapshot()}
 
 @get("/ctd/simulation", sync_to_thread=False)
 def ctd_simulation_status() -> dict:
