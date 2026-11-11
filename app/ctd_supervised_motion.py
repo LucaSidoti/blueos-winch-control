@@ -11,6 +11,14 @@ from state import state
 
 MAX_DEPTH_M = 0.5
 MAX_RUN_S = 20.0
+# Max cycle: deploy + sample + retract + HOME verification, plus margin.
+# Require a newly completed readback before arming; never extend the 60 s TTL.
+MAX_ARM_AUDIT_AGE_S = 5.0
+CYCLE_EVIDENCE_MARGIN_S = 2.0
+HOME_VERIFICATION_MAX_S = 6.0
+
+def _minimum_validation_remaining(sample_seconds):
+    return 2 * MAX_RUN_S + sample_seconds + HOME_VERIFICATION_MAX_S + CYCLE_EVIDENCE_MARGIN_S
 _lock = RLock()
 _generation = 0
 _status = {'phase': 'idle', 'note': 'Operator-supervised only'}
@@ -130,6 +138,11 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
         raise ValueError('Commissioning sampling duration must be 1 to 15 s')
     if not audit.get('missionValidated') or not mission.get('telemetryFresh'):
         raise ValueError('Real ArduPilot mission validation and fresh telemetry required')
+    if audit.get('status') != 'complete' or audit.get('snapshotAgeSeconds') is None or audit['snapshotAgeSeconds'] > MAX_ARM_AUDIT_AGE_S:
+        raise ValueError('Fresh completed mission readback (age <= 5 s) required before arming; request validation and retry promptly')
+    if (audit.get('validationRemainingSeconds') is None or
+            audit['validationRemainingSeconds'] < _minimum_validation_remaining(sample_seconds)):
+        raise ValueError('Insufficient validated-mission lifetime for full cycle; shorten sampling or refresh mission readback')
     if rehearsal is None or rehearsal.get('station') != station:
         raise ValueError('Matching indoor rehearsal required')
     if rehearsal.get('virtualSequence') not in (station['waypointSequence'], station['loiterSequence']):
@@ -170,7 +183,7 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
                   'realArduPilotSequenceRequired':False,
                   'homePhysicallyVerified':False,
                   'missionContinuationAuthorized':False,
-                  'automaticAdvanceEnabled':False, 'error':None}
+                  'automaticAdvanceEnabled':False, 'error':None, 'faultEvidence':None}
         return dict(_cycle)
 
 
@@ -191,9 +204,16 @@ def cycle_arrival(*, rehearsal, mission, audit):
         if 12742000*math.asin(min(1.0, math.sqrt(a))) > 3.0 or gps['speedMps'] > 0.3:
             return dict(_cycle)
         if (not mission.get('telemetryFresh') or not audit.get('missionValidated')
+                or audit.get('validationRemainingSeconds') is None
+                or audit['validationRemainingSeconds'] < _minimum_validation_remaining(_cycle['samplingSeconds'])
                 or rehearsal.get('virtualSequence') != _cycle['stationSequence']
                 or rehearsal.get('stationIndex') != _cycle['stationIndex']):
-            _cycle.update(phase='fault',error='ArduPilot mission evidence lost before start')
+            _cycle.update(phase='fault',error='Mission evidence insufficient before deployment',
+                          faultEvidence={'telemetryFresh':mission.get('telemetryFresh'),
+                                         'missionValidated':audit.get('missionValidated'),
+                                         'auditRemainingSeconds':audit.get('validationRemainingSeconds'),
+                                         'virtualSequence':rehearsal.get('virtualSequence'),
+                                         'stationIndex':rehearsal.get('stationIndex')})
             return dict(_cycle)
         if not state.torque_enabled or state.lock_state != 'unlocked' or state.retract_limit.fault:
             _cycle.update(phase='fault', error='Winch readiness lost before deployment')
@@ -214,11 +234,35 @@ def _cycle_worker(generation, sequence):
         from ctd_terminal_rehearsal import terminal_rehearsal
         mission = mission_monitor.snapshot()
         audit = mission_audit.snapshot()
-        gps = terminal_rehearsal.snapshot().get('simulatedGPS')
-        if (not mission.get('telemetryFresh') or not audit.get('missionValidated')
-                or terminal_rehearsal.snapshot().get('virtualSequence') != sequence
-                or terminal_rehearsal.snapshot().get('stationIndex') != cycle_snapshot().get('stationIndex')):
-            raise RuntimeError('ArduPilot mission/telemetry evidence lost')
+        rehearsal = terminal_rehearsal.snapshot()
+        gps = rehearsal.get('simulatedGPS')
+        cycle = cycle_snapshot()
+        failures = []
+        if not mission.get('telemetryFresh'):
+            failures.append('telemetry_stale')
+        if not audit.get('missionValidated'):
+            failures.append('mission_validation_invalid')
+        if rehearsal.get('virtualSequence') != sequence:
+            failures.append('virtual_sequence_mismatch')
+        if rehearsal.get('stationIndex') != cycle.get('stationIndex'):
+            failures.append('station_index_mismatch')
+        if failures:
+            evidence = {
+                'failedChecks': failures,
+                'telemetryFresh': mission.get('telemetryFresh'),
+                'telemetryAgeSeconds': mission.get('telemetryAgeSeconds'),
+                'missionValidated': audit.get('missionValidated'),
+                'auditStatus': audit.get('status'),
+                'auditGeneration': audit.get('auditGeneration'),
+                'auditAgeSeconds': audit.get('snapshotAgeSeconds'),
+                'auditRemainingSeconds': audit.get('validationRemainingSeconds'),
+                'expectedVirtualSequence': sequence,
+                'actualVirtualSequence': rehearsal.get('virtualSequence'),
+                'expectedStationIndex': cycle.get('stationIndex'),
+                'actualStationIndex': rehearsal.get('stationIndex'),
+            }
+            _cycle_set('fault', faultEvidence=evidence)
+            raise RuntimeError('Mission evidence failed: ' + ', '.join(failures))
         if (not gps or not 0 <= gps.get('ageSeconds', 1e6) <= 2.0):
             raise RuntimeError('Terminal GPS injection lost')
         cfg = cycle_snapshot()

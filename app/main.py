@@ -521,7 +521,8 @@ def _ctd_auto_validation_worker():
             phase = live_ctd_preview.engine.snapshot().get("lifecycle")
             auto_validation.tick(audit=mission_audit, coordinator=ctd_coordinator,
                                  mission=mission_monitor.snapshot(),
-                                 preview_phase=phase.get("phase") if phase else None)
+                                 preview_phase=phase.get("phase") if phase else None,
+                                  physical_cycle_phase=ctd_supervised_motion.cycle_snapshot().get('phase'))
         except Exception:
             logging.exception("CTD automatic mission readback failed")
         time.sleep(2.0)

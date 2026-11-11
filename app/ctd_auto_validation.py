@@ -15,13 +15,18 @@ class AutoValidation:
         self.last_attempt = None
         self.last_result = 'not_started'
 
-    def tick(self, *, audit, coordinator, mission, preview_phase=None, now=None):
+    def tick(self, *, audit, coordinator, mission, preview_phase=None, physical_cycle_phase=None, now=None):
         now = time.monotonic() if now is None else now
         with self.lock:
             state = audit.snapshot()
             phase = state.get('status')
             if phase in ('request_list', 'waiting_count', 'downloading'):
                 self.last_result = 'download_in_progress'
+                return False
+            if physical_cycle_phase in ('armed_waiting_for_simulated_arrival', 'deploying',
+                                        'sampling', 'retracting', 'verifying_home',
+                                        'home_confirmed_pending_stop'):
+                self.last_result = 'paused_during_physical_cycle'
                 return False
             if preview_phase in ('descending', 'sampling', 'retracting', 'ready_to_continue'):
                 self.last_result = 'paused_during_ctd_cycle'

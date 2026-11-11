@@ -8,6 +8,7 @@ from threading import RLock
 WAYPOINT = 16  # MAV_CMD_NAV_WAYPOINT
 LOITER_UNLIM = 17  # MAV_CMD_NAV_LOITER_UNLIM
 MISSION_TYPE = 0  # MAV_MISSION_TYPE_MISSION
+VALIDATION_TTL_S = 60.0
 
 
 def validate_items(stations, items, tolerance_deg=0.00001):
@@ -155,10 +156,13 @@ class MissionAudit:
             return {
                 'status': self.phase,
                 'auditGeneration': self.generation,
-                'missionValidated': (self.phase == 'complete' and self.result['valid']
+                'missionValidated': (self.phase == 'complete' and self.result is not None and self.result['valid']
                                      and self.completed_at is not None
-                                     and time.monotonic() - self.completed_at <= 60),
+                                     and time.monotonic() - self.completed_at <= VALIDATION_TTL_S),
                 'snapshotOnly': True,
+                'validationTtlSeconds': VALIDATION_TTL_S,
+                'validationRemainingSeconds': (round(max(0.0, VALIDATION_TTL_S - (time.monotonic() - self.completed_at)), 2)
+                                               if self.completed_at is not None else None),
                 'snapshotAgeSeconds': (round(time.monotonic() - self.completed_at, 2)
                                        if self.completed_at is not None else None),
                 'missionItemCount': self.count,
