@@ -532,9 +532,21 @@ def _ctd_auto_validation_worker():
 def ctd_mission_validation() -> dict:
     return mission_audit.snapshot()
 
+# Physical cycle phases that must not be interrupted by readback/configuration changes.
+_CTD_ACTIVE_CYCLE_PHASES = frozenset((
+    'armed_waiting_for_simulated_arrival', 'deploying', 'sampling',
+    'retracting', 'verifying_home', 'home_confirmed_pending_stop',
+))
+
+def _ctd_cycle_active():
+    return ctd_supervised_motion.cycle_snapshot().get('phase') in _CTD_ACTIVE_CYCLE_PHASES
+
+
 @post("/ctd/mission/validation/request", sync_to_thread=False)
 def request_ctd_mission_validation() -> dict:
     """Request a read-only MAVLink mission download; never changes vehicle state."""
+    if _ctd_cycle_active():
+        return {"success": False, "error": "Mission readback blocked while physical CTD cycle is armed or active"}
     source = mission_monitor.snapshot()
     if not source["telemetryFresh"]:
         return {"success": False, "error": "Autopilot telemetry is stale"}
@@ -573,6 +585,8 @@ def ctd_mission_status() -> dict:
 @post("/ctd/mission/load", sync_to_thread=True)
 def load_ctd_mission() -> dict:
     try:
+        if _ctd_cycle_active():
+            raise ValueError('Stop physical cycle before loading CTD configuration')
         result = ctd_coordinator.load(CTD_CONFIG_PATH)
         mission_audit.invalidate()
         live_ctd_preview.reset()

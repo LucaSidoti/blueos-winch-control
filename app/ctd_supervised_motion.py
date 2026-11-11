@@ -183,7 +183,9 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
                   'realArduPilotSequenceRequired':False,
                   'homePhysicallyVerified':False,
                   'missionContinuationAuthorized':False,
-                  'automaticAdvanceEnabled':False, 'error':None, 'faultEvidence':None}
+                  'automaticAdvanceEnabled':False, 'error':None, 'faultEvidence':None,
+                  'auditGenerationAtArm':audit['auditGeneration'],
+                  'autopilotSourceAtArm':[mission.get('sourceSystem'),mission.get('sourceComponent')]}
         return dict(_cycle)
 
 
@@ -204,6 +206,8 @@ def cycle_arrival(*, rehearsal, mission, audit):
         if 12742000*math.asin(min(1.0, math.sqrt(a))) > 3.0 or gps['speedMps'] > 0.3:
             return dict(_cycle)
         if (not mission.get('telemetryFresh') or not audit.get('missionValidated')
+                or audit.get('auditGeneration') != _cycle.get('auditGenerationAtArm')
+                or [mission.get('sourceSystem'),mission.get('sourceComponent')] != _cycle.get('autopilotSourceAtArm')
                 or audit.get('validationRemainingSeconds') is None
                 or audit['validationRemainingSeconds'] < _minimum_validation_remaining(_cycle['samplingSeconds'])
                 or rehearsal.get('virtualSequence') != _cycle['stationSequence']
@@ -242,6 +246,10 @@ def _cycle_worker(generation, sequence):
             failures.append('telemetry_stale')
         if not audit.get('missionValidated'):
             failures.append('mission_validation_invalid')
+        if audit.get('auditGeneration') != cycle.get('auditGenerationAtArm'):
+            failures.append('mission_audit_generation_changed')
+        if [mission.get('sourceSystem'),mission.get('sourceComponent')] != cycle.get('autopilotSourceAtArm'):
+            failures.append('autopilot_source_changed')
         if rehearsal.get('virtualSequence') != sequence:
             failures.append('virtual_sequence_mismatch')
         if rehearsal.get('stationIndex') != cycle.get('stationIndex'):
@@ -254,8 +262,11 @@ def _cycle_worker(generation, sequence):
                 'missionValidated': audit.get('missionValidated'),
                 'auditStatus': audit.get('status'),
                 'auditGeneration': audit.get('auditGeneration'),
+                'auditGenerationAtArm': cycle.get('auditGenerationAtArm'),
                 'auditAgeSeconds': audit.get('snapshotAgeSeconds'),
                 'auditRemainingSeconds': audit.get('validationRemainingSeconds'),
+                'autopilotSourceAtArm': cycle.get('autopilotSourceAtArm'),
+                'actualAutopilotSource': [mission.get('sourceSystem'),mission.get('sourceComponent')],
                 'expectedVirtualSequence': sequence,
                 'actualVirtualSequence': rehearsal.get('virtualSequence'),
                 'expectedStationIndex': cycle.get('stationIndex'),

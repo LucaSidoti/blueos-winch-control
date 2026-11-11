@@ -8,7 +8,7 @@ from threading import RLock
 WAYPOINT = 16  # MAV_CMD_NAV_WAYPOINT
 LOITER_UNLIM = 17  # MAV_CMD_NAV_LOITER_UNLIM
 MISSION_TYPE = 0  # MAV_MISSION_TYPE_MISSION
-VALIDATION_TTL_S = 60.0
+VALIDATION_TTL_S = 120.0  # bounded commissioning snapshot; not continuous mission integrity
 
 
 def validate_items(stations, items, tolerance_deg=0.00001):
