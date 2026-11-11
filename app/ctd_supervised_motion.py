@@ -140,6 +140,16 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
         raise RuntimeError('Winch not initialized, calibrated or fault-free')
     if state.depth.active or state.motion.velocity != 0 or state.home_adjust_mode or state.home_recovery_mode:
         raise RuntimeError('Winch is busy')
+    if not state.torque_enabled or state.lock_state != 'unlocked':
+        raise RuntimeError('Winch torque must be enabled and lock released')
+    # This is a physical motor test. An encoder-based HOME check is necessary,
+    # but never represents independent confirmation that the CTD is stowed.
+    home_status = depth_control.get_status(read_position=True)
+    home_check = assess_home(home_status, sampled_at=time.monotonic())
+    if not home_check.get('encoderHomeCandidate'):
+        raise RuntimeError('Fresh encoder feedback within HOME tolerance required before arming')
+    if rehearsal.get('rehearsal', {}).get('phase') == 'fault':
+        raise RuntimeError('Rehearsal is faulted; reset before arming')
     with _cycle_lock:
         if _cycle['phase'] not in ('idle', 'complete', 'fault', 'stopped'):
             raise RuntimeError('Existing cycle must finish or be stopped')
@@ -156,6 +166,10 @@ def cycle_arm(*, token, confirmation, station, mission, audit,
                   'stationIndex':rehearsal['stationIndex'],
                   'motorReleased':False,
                   'motorCommandsIssued':False,
+                  'navigationEvidence':'terminal_simulated_gps_only',
+                  'realArduPilotSequenceRequired':False,
+                  'homePhysicallyVerified':False,
+                  'missionContinuationAuthorized':False,
                   'automaticAdvanceEnabled':False, 'error':None}
         return dict(_cycle)
 
@@ -167,10 +181,22 @@ def cycle_arrival(*, rehearsal, mission, audit):
             return dict(_cycle)
         if rehearsal.get('rehearsal',{}).get('phase') != 'descending':
             return dict(_cycle)
+        gps = rehearsal.get('simulatedGPS')
+        if (not gps or gps.get('ageSeconds', float('inf')) > 2.0
+                or gps.get('ageSeconds', -1) < 0):
+            return dict(_cycle)
+        lat1, lon1 = map(math.radians, (gps['latitude'], gps['longitude']))
+        lat2, lon2 = map(math.radians, (_cycle['stationLatitude'], _cycle['stationLongitude']))
+        a = math.sin((lat2-lat1)/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin((lon2-lon1)/2)**2
+        if 12742000*math.asin(min(1.0, math.sqrt(a))) > 3.0 or gps['speedMps'] > 0.3:
+            return dict(_cycle)
         if (not mission.get('telemetryFresh') or not audit.get('missionValidated')
                 or rehearsal.get('virtualSequence') != _cycle['stationSequence']
                 or rehearsal.get('stationIndex') != _cycle['stationIndex']):
             _cycle.update(phase='fault',error='ArduPilot mission evidence lost before start')
+            return dict(_cycle)
+        if not state.torque_enabled or state.lock_state != 'unlocked' or state.retract_limit.fault:
+            _cycle.update(phase='fault', error='Winch readiness lost before deployment')
             return dict(_cycle)
         ownership.acquire_bench_cycle()
         generation = _cycle['generation']
@@ -193,7 +219,7 @@ def _cycle_worker(generation, sequence):
                 or terminal_rehearsal.snapshot().get('virtualSequence') != sequence
                 or terminal_rehearsal.snapshot().get('stationIndex') != cycle_snapshot().get('stationIndex')):
             raise RuntimeError('ArduPilot mission/telemetry evidence lost')
-        if (not gps or gps.get('ageSeconds', 1e6) > 2.0):
+        if (not gps or not 0 <= gps.get('ageSeconds', 1e6) <= 2.0):
             raise RuntimeError('Terminal GPS injection lost')
         cfg = cycle_snapshot()
         lat1, lon1 = map(math.radians, (gps['latitude'], gps['longitude']))
@@ -203,6 +229,9 @@ def _cycle_worker(generation, sequence):
             raise RuntimeError('Simulated station keeping lost')
         if _cycle_stop.is_set() or generation != _cycle_generation:
             raise RuntimeError('Operator stopped the cycle')
+        if (not state.initialized or not state.torque_enabled
+                or state.lock_state != 'unlocked' or state.retract_limit.fault):
+            raise RuntimeError('Winch readiness lost during cycle')
         # Mission state is checked by the monitoring loop below, not trusted from GPS alone.
     try:
         with command_as('bench_cycle'):
@@ -223,6 +252,7 @@ def _cycle_worker(generation, sequence):
                 time.sleep(0.15)
             else:
                 raise RuntimeError('Deployment timed out')
+            check()
             _cycle_set('sampling')
             end=time.monotonic()+cycle_snapshot()['samplingSeconds']
             while time.monotonic() < end:
@@ -248,6 +278,7 @@ def _cycle_worker(generation, sequence):
                 time.sleep(0.15)
             else:
                 raise RuntimeError('Retraction timed out')
+            check()
             _cycle_set('verifying_home')
             first=None
             deadline=time.monotonic()+6.0
@@ -274,7 +305,6 @@ def _cycle_worker(generation, sequence):
         if not _cycle_stop.is_set():
             _cycle_set('fault',error=str(exc))
     finally:
-        _cycle_stop.set()
         try:
             depth_control.cancel(stop=True)
         except Exception as exc:
@@ -283,8 +313,10 @@ def _cycle_worker(generation, sequence):
             ownership.release_bench_cycle()
             with _cycle_lock:
                 _cycle['motorReleased'] = True
-                if _cycle['phase'] == 'home_confirmed_pending_stop':
+                if (_cycle['phase'] == 'home_confirmed_pending_stop'
+                        and generation == _cycle_generation and not _cycle_stop.is_set()):
                     _cycle['phase'] = 'complete'
+                _cycle_stop.set()
 
 
 def cycle_stop():

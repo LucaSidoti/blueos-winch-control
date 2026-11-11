@@ -409,7 +409,7 @@ def ctd_rehearsal_status() -> dict:
 def ctd_rehearsal_reset() -> dict:
     if ctd_supervised_motion.cycle_snapshot().get("phase") in (
             "armed_waiting_for_simulated_arrival", "deploying", "sampling",
-            "retracting", "verifying_home"):
+            "retracting", "verifying_home", "home_confirmed_pending_stop"):
         return {"success": False, "error": "Stop active physical cycle before resetting rehearsal"}
     terminal_rehearsal.reset()
     return terminal_rehearsal.snapshot()
