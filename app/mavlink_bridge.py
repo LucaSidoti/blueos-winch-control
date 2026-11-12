@@ -10,6 +10,7 @@ from state import mission_monitor
 from mission_audit import mission_audit
 from ctd_observation import ctd_position_monitor
 from ctd_gps_fix import ctd_gps_fix_monitor
+from ctd_orchestrator import hybrid_sitl
 
 # ============================================================
 # MAVLINK HELPERS
@@ -68,17 +69,39 @@ def mavlink_listener():
         return
 
     command_ready = False
+    last_advance = None
 
     while True:
         try:
             mission_audit.tick(connection)
+            # Only the MAVLink listener thread may transmit mission commands.
+            request=hybrid_sitl.snapshot().get('missionAdvancePending')
+            if request is None:
+                last_advance=None
+            elif request != last_advance:
+                mission=mission_monitor.snapshot()
+                if (mission.get('telemetryFresh') and
+                    hybrid_sitl.snapshot().get('phase')=='advancing' and
+                    hybrid_sitl.source == (mission.get('sourceSystem'),mission.get('sourceComponent'))):
+                    connection.mav.mission_set_current_send(mission['sourceSystem'],
+                                                            mission['sourceComponent'],int(request))
+                    last_advance=request
             message = connection.recv_match(
-                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_ACK", "GLOBAL_POSITION_INT", "GPS_RAW_INT"],
+                type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_ACK", "GLOBAL_POSITION_INT", "GPS_RAW_INT", "HEARTBEAT"],
                 blocking=True,
                 timeout=1,
             )
 
             if message is None:
+                continue
+
+            if message.get_type() == "HEARTBEAT":
+                if message.get_srcComponent()==1 and message.get_type() == 'HEARTBEAT':
+                    try:
+                        mode=mavutil.mode_string_v10(message)
+                        hybrid_sitl.update_mode(mode,(message.get_srcSystem(),message.get_srcComponent()))
+                    except Exception:
+                        pass
                 continue
 
             if message.get_type() == "GPS_RAW_INT":
@@ -131,6 +154,8 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+                        raise RuntimeError('Hybrid SITL session active')
                     if ownership.snapshot()['owner'] != 'manual':
                         raise RuntimeError('CTD cycle active; press STOP first')
                     depth_control.cancel(stop=False)
@@ -152,6 +177,7 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    hybrid_sitl.stop()
                     ctd_supervised_motion.cycle_stop()
                     control.execute_stop()
                     print(
@@ -170,6 +196,8 @@ def mavlink_listener():
                     flush=True,
                 )
                 try:
+                    if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+                        raise RuntimeError('Hybrid SITL session active')
                     if ownership.snapshot()['owner'] != 'manual':
                         raise RuntimeError('CTD cycle active; press STOP first')
                     depth_control.cancel(stop=False)

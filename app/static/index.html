@@ -1644,5 +1644,25 @@
     setInterval(refreshState, 1000);
     setInterval(checkConnection, 3000);
 </script>
+
+<section style="max-width:780px;margin:20px auto;padding:20px;background:#1e293b;border-radius:14px;color:#f8fafc;font-family:Arial,sans-serif">
+  <h2 style="margin-top:0">Autonomous Hybrid SITL (bench only)</h2>
+  <p>Virtual navigation via ArduPilot SITL; real winch limited to 2 m. Requires fresh validated mission and AUTO mode.</p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap">
+    <button id="hybrid-start" style="background:#16a34a;padding:14px">START HYBRID MISSION</button>
+    <button id="hybrid-stop" style="background:#dc2626;padding:14px">STOP HYBRID</button>
+  </div>
+  <pre id="hybrid-status" style="white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;margin-top:14px">Waiting for status...</pre>
+</section>
+<script>
+(async function(){
+ const display=document.getElementById('hybrid-status');
+ async function refresh(){try{const r=await fetch('/ctd/hybrid-sitl');display.textContent=JSON.stringify(await r.json(),null,2)}catch(e){display.textContent=String(e)}}
+ async function act(path,body){try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});display.textContent=JSON.stringify(await r.json(),null,2)}catch(e){display.textContent=String(e)}}
+ document.getElementById('hybrid-start').onclick=()=>act('/ctd/hybrid-sitl/start',{depth_limit_m:2,sample_limit_s:15});
+ document.getElementById('hybrid-stop').onclick=()=>act('/ctd/hybrid-sitl/stop',{});
+ await refresh();setInterval(refresh,2000);
+})();
+</script>
 </body>
 </html>

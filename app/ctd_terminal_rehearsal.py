@@ -28,7 +28,6 @@ class CTDTerminalRehearsal:
             self.station_index = None
             self.virtual_sequence = None
             self.completed = []
-            self.fault_evidence = None
 
     def _event(self, name):
         self.events.append({"time": round(time.monotonic(), 3), "event": name})
@@ -50,7 +49,7 @@ class CTDTerminalRehearsal:
             self.station = station
             self.mission_key = (mission.get("sourceSystem"),
                                 mission.get("sourceComponent"))
-            self.engine = CTDLifecycle(station, stable_s=5.0, descent_timeout_s=900, retract_timeout_s=900)
+            self.engine = CTDLifecycle(station, stable_s=5.0)
             self.engine.start(time.monotonic())
             self._event("rehearsal_started")
             return self.snapshot()
@@ -79,7 +78,7 @@ class CTDTerminalRehearsal:
             self.station_index += 1
             self.station = dict(self.stations[self.station_index])
             self.virtual_sequence = self.station["waypointSequence"]
-            self.engine = CTDLifecycle(self.station, stable_s=5.0, descent_timeout_s=900, retract_timeout_s=900)
+            self.engine = CTDLifecycle(self.station, stable_s=5.0)
             self.engine.start(time.monotonic())
             self.last_fix = None
             self.last_fix_at = None
@@ -150,20 +149,6 @@ class CTDTerminalRehearsal:
                 position_error_m=error,speed_m_s=speed,
                 depth_m=self.depth,depth_feedback_ok=self.depth is not None,
                 home_verified=self.home))
-        if self.engine.phase.value == "fault" and self.fault_evidence is None:
-            self.fault_evidence = {
-                "reason": self.engine.fault,
-                "telemetryFresh": mission.get("telemetryFresh"),
-                "telemetryAgeSeconds": mission.get("telemetryAgeSeconds"),
-                "missionValidated": audit.get("missionValidated"),
-                "auditStatus": audit.get("status"),
-                "auditGeneration": audit.get("auditGeneration"),
-                "auditAgeSeconds": audit.get("snapshotAgeSeconds"),
-                "virtualSequence": self.virtual_sequence,
-                "stationIndex": self.station_index,
-                "simulatedGpsFresh": fix_fresh,
-            }
-            self._event("rehearsal_fault")
         return self.snapshot()
 
     def snapshot(self):
@@ -179,7 +164,7 @@ class CTDTerminalRehearsal:
                                  "ageSeconds":round(time.monotonic()-self.last_fix_at,2)}
                                 if self.last_fix else None),
                 "simulatedDepthMeters":self.depth,"simulatedHome":self.home,
-                "events":list(self.events),"faultEvidence":self.fault_evidence,
+                "events":list(self.events),
                 "realGPSOverridden":False,"hardwareCommandsSent":False,
                 "mavlinkCommandsSent":False,"automaticWinchEnabled":False,
                 "automaticAdvanceEnabled":False}

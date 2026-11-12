@@ -5,7 +5,6 @@ No actuator, MAVLink transmission, or autonomous execution capability.
 import math
 import time
 from threading import RLock
-from collections import deque
 
 
 def distance_m(lat1, lon1, lat2, lon2):
@@ -27,7 +26,6 @@ class CTDPositionMonitor:
         self.position = None
         self.last_received = None
         self.source = None
-        self.samples = deque(maxlen=512)
 
     def update_global_position(self, message):
         # Only valid GLOBAL_POSITION_INT with plausible lat/lon and speed.
@@ -42,7 +40,6 @@ class CTDPositionMonitor:
             self.position = (lat, lon, math.hypot(vx, vy))
             self.last_received = time.monotonic()
             self.source = (message.get_srcSystem(), message.get_srcComponent())
-            self.samples.append((self.last_received, lat, lon, self.position[2], self.source))
 
     def snapshot(self, station=None, *, expected_source=None):
         with self.lock:
@@ -64,59 +61,6 @@ class CTDPositionMonitor:
                 result['withinStationTolerance'] = error <= 3.0
                 result['stableNow'] = error <= 3.0 and speed <= 0.3
             return result
-
-
-    def sustained_arrival(self, station, *, expected_source, at_loiter,
-                          mission_validated, mission_fresh, sequence_entered=None, stable_seconds=10.0,
-                          max_gap_seconds=2.0):
-        """Read-only; count actual GPS samples, never HTTP polling as dwell time."""
-        now = time.monotonic()
-        result = {'arrivalConfirmed': False, 'stableDurationSeconds': 0.0,
-                  'requiredStableSeconds': stable_seconds, 'deploymentAuthorized': False,
-                  'arrivalBlockReason': 'missing_station'}
-        if not station:
-            return result
-        if not mission_validated or not mission_fresh:
-            result['arrivalBlockReason'] = 'mission_not_validated_or_stale'
-            return result
-        if sequence_entered is None:
-            result['arrivalBlockReason'] = 'sequence_entry_unknown'
-            return result
-        if not at_loiter:
-            result['arrivalBlockReason'] = 'not_at_loiter_sequence'
-            return result
-        with self.lock:
-            samples = list(self.samples)
-        if not samples or now - samples[-1][0] > 3.0:
-            result['arrivalBlockReason'] = 'position_stale'
-            return result
-        if samples[-1][4] != expected_source:
-            result['arrivalBlockReason'] = 'position_source_mismatch'
-            return result
-        # Scan backwards through a contiguous run of valid GPS observations.
-        last = None
-        earliest = None
-        for timestamp, lat, lon, speed, source in reversed(samples):
-            if (source != expected_source or
-                (sequence_entered is not None and timestamp < sequence_entered) or
-                (last is not None and last - timestamp > max_gap_seconds)):
-                break
-            try:
-                stable = distance_m(lat, lon, station['latitude'], station['longitude']) <= 3.0 and speed <= 0.3
-            except (KeyError, ValueError, TypeError):
-                stable = False
-            if not stable:
-                break
-            earliest = timestamp
-            last = timestamp
-        if earliest is None:
-            result['arrivalBlockReason'] = 'outside_position_or_speed_limits'
-            return result
-        duration = max(0.0, samples[-1][0] - earliest)
-        result['stableDurationSeconds'] = round(duration, 2)
-        result['arrivalConfirmed'] = duration >= stable_seconds
-        result['arrivalBlockReason'] = None if result['arrivalConfirmed'] else 'stabilizing'
-        return result
 
 
 ctd_position_monitor = CTDPositionMonitor()

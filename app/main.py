@@ -21,6 +21,7 @@ from ctd_auto_validation import auto_validation
 from ctd_readiness import snapshot as ctd_readiness_snapshot
 from ctd_encoder_feedback import assess as assess_ctd_encoder_home
 from ctd_command_ownership import ownership
+from ctd_orchestrator import hybrid_sitl
 from ctd_measured_velocity import read as read_ctd_measured_velocity
 from ctd_gps_fix import ctd_gps_fix_monitor
 import time
@@ -195,6 +196,7 @@ def motor_state() -> dict:
 @post("/motor/stop", sync_to_thread=True)
 def stop_motor() -> dict:
     try:
+        hybrid_sitl.stop()
         ctd_supervised_motion.cycle_stop()
         return control.execute_stop()
     except Exception as exc:
@@ -206,6 +208,8 @@ def stop_motor() -> dict:
 @post("/motor/retract", sync_to_thread=True)
 def command_retract() -> dict:
     try:
+        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+            raise RuntimeError('Hybrid SITL session active; use STOP')
         if ownership.snapshot()['owner'] != 'manual':
             raise RuntimeError('CTD cycle owns winch; use STOP to abort')
         depth_control.cancel(stop=False)
@@ -219,6 +223,8 @@ def command_retract() -> dict:
 @post("/motor/deploy", sync_to_thread=True)
 def command_deploy() -> dict:
     try:
+        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+            raise RuntimeError('Hybrid SITL session active; use STOP')
         if ownership.snapshot()['owner'] != 'manual':
             raise RuntimeError('CTD cycle owns winch; use STOP to abort')
         depth_control.cancel(stop=False)
@@ -243,6 +249,8 @@ def set_depth_target(data: dict) -> dict:
     try:
         if "depth_m" not in data:
             raise ValueError("JSON body must contain depth_m")
+        if hybrid_sitl.snapshot()["phase"] in ("navigating","deploying","sampling","retracting","verifying_home","advancing"):
+            raise RuntimeError("Hybrid SITL session active")
         return depth_control.set_target(data["depth_m"])
     except Exception as exc:
         return {"success": False, "error": str(exc)}
@@ -251,6 +259,8 @@ def set_depth_target(data: dict) -> dict:
 @post("/depth/home", sync_to_thread=True)
 def return_home() -> dict:
     try:
+        if hybrid_sitl.snapshot()["phase"] in ("navigating","deploying","sampling","retracting","verifying_home","advancing"):
+            raise RuntimeError("Hybrid SITL session active")
         return depth_control.go_home()
     except Exception as exc:
         return {"success": False, "error": str(exc)}
@@ -474,7 +484,6 @@ def ctd_hybrid_cycle_arm(data: dict) -> dict:
             raise ValueError('Invalid station index')
         with _ctd_validation_arm_gate:
             return {'accepted':True, **ctd_supervised_motion.cycle_arm(
-            token=data.get('token'), confirmation=data.get('confirmation'),
             station=stations[index], mission=mission_monitor.snapshot(),
             audit=mission_audit.snapshot(),
             test_depth_m=data.get('test_depth_m', min(2.0, stations[index]['targetDepth'])),
@@ -486,6 +495,7 @@ def ctd_hybrid_cycle_arm(data: dict) -> dict:
 
 @post("/ctd/rehearsal/cycle/stop", sync_to_thread=True)
 def ctd_hybrid_cycle_stop() -> dict:
+    hybrid_sitl.stop()
     return ctd_supervised_motion.cycle_stop()
 
 
@@ -498,8 +508,7 @@ def ctd_bench_motion_status() -> dict:
 def ctd_bench_motion_target(data: dict) -> dict:
     try:
         return ctd_supervised_motion.request(
-            data.get("depth_m"), token=data.get("token"),
-            confirmation=data.get("confirmation"))
+            data.get("depth_m"))
     except Exception as exc:
         return {"accepted": False, "error": str(exc), **ctd_supervised_motion.snapshot()}
 
@@ -525,7 +534,7 @@ def _ctd_auto_validation_worker():
                 auto_validation.tick(audit=mission_audit, coordinator=ctd_coordinator,
                                  mission=mission_monitor.snapshot(),
                                  preview_phase=phase.get("phase") if phase else None,
-                                  physical_cycle_phase=ctd_supervised_motion.cycle_snapshot().get('phase'))
+                                  physical_cycle_phase=('deploying' if hybrid_sitl.snapshot()['phase'] in ('deploying','sampling','retracting','verifying_home','advancing') else ctd_supervised_motion.cycle_snapshot().get('phase')))
         except Exception:
             logging.exception("CTD automatic mission readback failed")
         time.sleep(2.0)
@@ -549,6 +558,8 @@ def _ctd_cycle_active():
 def request_ctd_mission_validation() -> dict:
     """Request a read-only MAVLink mission download; never changes vehicle state."""
     with _ctd_validation_arm_gate:
+        if hybrid_sitl.snapshot()["phase"] in ("navigating","deploying","sampling","retracting","verifying_home","advancing"):
+            raise ValueError("Hybrid SITL mission active")
         if _ctd_cycle_active():
             return {"success": False, "error": "Mission readback blocked while physical CTD cycle is armed or active"}
         source = mission_monitor.snapshot()
@@ -589,6 +600,8 @@ def ctd_mission_status() -> dict:
 @post("/ctd/mission/load", sync_to_thread=True)
 def load_ctd_mission() -> dict:
     try:
+        if hybrid_sitl.snapshot()["phase"] in ("navigating","deploying","sampling","retracting","verifying_home","advancing"):
+            raise ValueError("Hybrid SITL mission active")
         if _ctd_cycle_active():
             raise ValueError('Stop physical cycle before loading CTD configuration')
         result = ctd_coordinator.load(CTD_CONFIG_PATH)
@@ -608,6 +621,8 @@ def load_ctd_mission() -> dict:
 def upload_ctd_mission_config(data: dict) -> dict:
     """Validate an uploaded station list; never actuate motors or MAVLink."""
     try:
+        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+            raise ValueError('Stop hybrid SITL mission before replacing configuration')
         if ctd_supervised_motion.cycle_snapshot().get('phase') in (
                 'armed_waiting_for_simulated_arrival', 'deploying', 'sampling',
                 'retracting', 'verifying_home', 'home_confirmed_pending_stop'):
@@ -624,6 +639,25 @@ def upload_ctd_mission_config(data: dict) -> dict:
             "error": str(exc),
             **ctd_coordinator.status(),
         }
+
+# HYBRID SITL CONTROL (bench only; token-free, explicitly enabled by environment).
+@get('/ctd/hybrid-sitl',sync_to_thread=False)
+def hybrid_sitl_status() -> dict:
+    return hybrid_sitl.snapshot()
+
+@post('/ctd/hybrid-sitl/start',sync_to_thread=True)
+def hybrid_sitl_start(data:dict) -> dict:
+    try:
+        result=hybrid_sitl.start(ctd_coordinator.status().get('stations',[]),
+                                  depth_limit=data.get('depth_limit_m',2.0),
+                                  sample_limit_s=data.get('sample_limit_s',15))
+        return {'accepted':True,**result}
+    except Exception as exc:
+        return {'accepted':False,'error':str(exc),**hybrid_sitl.snapshot()}
+
+@post('/ctd/hybrid-sitl/stop',sync_to_thread=True)
+def hybrid_sitl_stop() -> dict:
+    return hybrid_sitl.stop()
 
 # ============================================================
 # START MAVLINK LISTENER
@@ -671,6 +705,9 @@ app = Litestar(
         set_depth_target,
         return_home,
         cancel_depth_target,
+        hybrid_sitl_status,
+        hybrid_sitl_start,
+        hybrid_sitl_stop,
         ctd_mission_status,
         ctd_simulation_status,
         ctd_simulation_start,

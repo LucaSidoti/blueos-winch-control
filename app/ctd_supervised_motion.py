@@ -2,7 +2,6 @@
 
 Not autonomous. Intended only for secured, attended, low-depth commissioning.
 """
-import os
 import math
 import time
 from threading import RLock, Thread, Event
@@ -74,16 +73,8 @@ def _watch(generation, deadline):
             _status = {'phase': 'stop_failed', 'error': str(exc)}
 
 
-def request(depth_m, *, token, confirmation):
+def request(depth_m):
     global _generation, _status
-    secret = os.environ.get('CTD_BENCH_MOTION_TOKEN', '')
-    if not secret or not isinstance(token, str):
-        raise PermissionError('Bench movement disabled: configure CTD_BENCH_MOTION_TOKEN')
-    import hmac
-    if not hmac.compare_digest(token, secret):
-        raise PermissionError('Invalid bench movement token')
-    if confirmation != 'WINCH_CLEAR_AND_ATTENDED':
-        raise ValueError('Explicit attended-motion confirmation required')
     if isinstance(depth_m, bool) or not isinstance(depth_m, (float, int)) or not math.isfinite(depth_m):
         raise ValueError('Invalid depth')
     if not 0 <= depth_m <= MAX_DEPTH_M:
@@ -144,15 +135,9 @@ def _cycle_set(phase, **values):
         _cycle.update(phase=phase, **values)
 
 
-def cycle_arm(*, token, confirmation, station, mission, audit,
+def cycle_arm(*, station, mission, audit,
               test_depth_m=0.2, sample_seconds=5, rehearsal=None):
     global _cycle_generation, _cycle
-    secret = os.environ.get('CTD_BENCH_MOTION_TOKEN', '')
-    import hmac
-    if not secret or not isinstance(token, str) or not hmac.compare_digest(token, secret):
-        raise PermissionError('Valid CTD_BENCH_MOTION_TOKEN required')
-    if confirmation != 'WINCH_CLEAR_AND_ATTENDED':
-        raise ValueError('Operator must confirm attended and clear winch')
     if not isinstance(test_depth_m, (int,float)) or isinstance(test_depth_m, bool) or not math.isfinite(test_depth_m) or not 0 <= test_depth_m <= MAX_DEPTH_M:
         raise ValueError('Commissioning depth must be 0 to 0.5 m')
     if type(sample_seconds) is not int or not 1 <= sample_seconds <= 15:
