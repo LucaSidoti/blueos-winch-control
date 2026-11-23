@@ -105,6 +105,31 @@ class CTDMissionCoordinator:
         self._source = str(path)
         return self.status()
 
+    def load_data(self, data: dict) -> dict:
+        """Validate QGroundControl JSON before replacing the station registry."""
+        stations = validate_config(data)
+        self._stations = stations
+        self._source = "qgc_http"
+        return self.status()
+
+    def stations_snapshot(self) -> list[CTDStation]:
+        """Return a detached station list for mission validation."""
+        return list(self._stations)
+
+    def match_sequence(self, sequence: int | None, fresh: bool) -> dict | None:
+        """Match a fresh mission item to its configured CTD station."""
+        if not fresh or sequence is None:
+            return None
+        for index, station in enumerate(self._stations):
+            if sequence in (station.waypoint_sequence, station.loiter_sequence):
+                return {
+                    "stationIndex": index,
+                    "stationNumber": index + 1,
+                    "station": station.to_dict(),
+                    "atLoiterSequence": sequence == station.loiter_sequence,
+                }
+        return None
+
     def status(self) -> dict:
         return {
             "mode": "configuration_only",
