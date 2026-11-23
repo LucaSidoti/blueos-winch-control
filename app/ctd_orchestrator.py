@@ -217,6 +217,7 @@ class HybridSITL:
         self.advance_sent_at=None
         self.mode=None
         self.mode_at=None
+        self.last_run=None
 
     def update_mode(self, mode, source):
         with self.lock:
@@ -230,7 +231,8 @@ class HybridSITL:
                     'stationCount':len(self.stations),'completedStations':list(self.completed),
                     'missionAdvancePending':self.advance_request,
                     'mode':self.mode,'tokenRequired':False,'maxDepthMeters':2.0,
-                    'encoderHomeIsPhysicalSwitch':False}
+                    'encoderHomeIsPhysicalSwitch':False,
+                    'lastRun':dict(self.last_run) if self.last_run else None}
 
     def start(self, stations, depth_limit=2.0, sample_limit_s=15):
         # Explicit opt-in prevents unintentional motor activation at service startup.
@@ -263,6 +265,7 @@ class HybridSITL:
                 raise RuntimeError('Calibrated encoder HOME required before starting')
             if ownership.snapshot()['owner']!='manual':
                 raise RuntimeError('Winch owned by another controller')
+            self.last_run=None
             self.source=(mission['sourceSystem'],mission['sourceComponent'])
             self.audit_generation=audit['auditGeneration']
             self.stations=[dict(s) for s in stations]
@@ -275,14 +278,45 @@ class HybridSITL:
             return self.snapshot()
 
     def stop(self):
+        # Stop hardware first. Never discard the station snapshot while a worker
+        # could still be using it for motion or mission advancement.
         with self.lock:
             self.stop_event.set()
-            if self.phase not in ('finished','fault'):
-                self.phase='stopped'
-            self.advance_request=None
-        # Zero velocity always permitted, including when motor ownership is held.
-        depth_control.cancel(stop=True)
-        return self.snapshot()
+            self.advance_request = None
+            if self.phase not in ('finished', 'fault'):
+                self.phase = 'stopped'
+            worker = self.worker
+        try:
+            depth_control.cancel(stop=True)
+        except Exception as exc:
+            with self.lock:
+                self.phase = 'fault'
+                self.error = 'STOP FAILED: ' + str(exc)
+            raise
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=5)
+        with self.lock:
+            if worker is not None and worker.is_alive():
+                # Keep the old snapshot until the worker is demonstrably stopped.
+                # Do not permit configuration replacement or a new run.
+                self.phase = 'stopping'
+                return self.snapshot()
+            self.last_run = {
+                'phase': self.phase, 'error': self.error,
+                'stationCount': len(self.stations),
+                'completedStations': list(self.completed),
+            }
+            self.worker = None
+            self.stations = []
+            self.index = 0
+            self.completed = []
+            self.source = None
+            self.audit_generation = None
+            self.advance_request = None
+            self.advance_sent_at = None
+            self.error = None
+            self.phase = 'stopped'
+            return self.snapshot()
 
     def _evidence(self, station, require_loiter=True):
         mission=mission_monitor.snapshot();audit=mission_audit.snapshot()

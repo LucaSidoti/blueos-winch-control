@@ -208,7 +208,7 @@ def stop_motor() -> dict:
 @post("/motor/retract", sync_to_thread=True)
 def command_retract() -> dict:
     try:
-        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing','stopping'):
             raise RuntimeError('Hybrid SITL session active; use STOP')
         if ownership.snapshot()['owner'] != 'manual':
             raise RuntimeError('CTD cycle owns winch; use STOP to abort')
@@ -223,7 +223,7 @@ def command_retract() -> dict:
 @post("/motor/deploy", sync_to_thread=True)
 def command_deploy() -> dict:
     try:
-        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing','stopping'):
             raise RuntimeError('Hybrid SITL session active; use STOP')
         if ownership.snapshot()['owner'] != 'manual':
             raise RuntimeError('CTD cycle owns winch; use STOP to abort')
@@ -621,7 +621,7 @@ def load_ctd_mission() -> dict:
 def upload_ctd_mission_config(data: dict) -> dict:
     """Validate an uploaded station list; never actuate motors or MAVLink."""
     try:
-        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing'):
+        if hybrid_sitl.snapshot()['phase'] in ('navigating','deploying','sampling','retracting','verifying_home','advancing','stopping'):
             raise ValueError('Stop hybrid SITL mission before replacing configuration')
         if ctd_supervised_motion.cycle_snapshot().get('phase') in (
                 'armed_waiting_for_simulated_arrival', 'deploying', 'sampling',
@@ -643,7 +643,8 @@ def upload_ctd_mission_config(data: dict) -> dict:
 # HYBRID SITL CONTROL (bench only; token-free, explicitly enabled by environment).
 @get('/ctd/hybrid-sitl',sync_to_thread=False)
 def hybrid_sitl_status() -> dict:
-    return hybrid_sitl.snapshot()
+    return {**hybrid_sitl.snapshot(),
+            'configuredStationCount': ctd_coordinator.status()['stationCount']}
 
 @post('/ctd/hybrid-sitl/start',sync_to_thread=True)
 def hybrid_sitl_start(data:dict) -> dict:
@@ -653,7 +654,7 @@ def hybrid_sitl_start(data:dict) -> dict:
                                   sample_limit_s=data.get('sample_limit_s',15))
         return {'accepted':True,**result}
     except Exception as exc:
-        return {'accepted':False,'error':str(exc),**hybrid_sitl.snapshot()}
+        return {**hybrid_sitl.snapshot(),'accepted':False,'error':str(exc)}
 
 @post('/ctd/hybrid-sitl/stop',sync_to_thread=True)
 def hybrid_sitl_stop() -> dict:
