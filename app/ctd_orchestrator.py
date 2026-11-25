@@ -189,6 +189,7 @@ class CTDOrchestratorPreview:
 # HYBRID SITL: simulated vehicle telemetry, real winch; bench-only commissioning.
 # One explicitly started session; no persistent authorization token.
 import os
+import config
 import time
 from threading import Thread, Event, RLock
 import depth_control
@@ -221,7 +222,7 @@ class HybridSITL:
 
     def update_mode(self, mode, source):
         with self.lock:
-            if self.source is None or tuple(source)==tuple(self.source):
+            if config.accepts_autopilot(*source) and (self.source is None or tuple(source)==tuple(self.source)):
                 self.mode=mode
                 self.mode_at=time.monotonic()
 
@@ -236,7 +237,7 @@ class HybridSITL:
 
     def start(self, stations, depth_limit=2.0, sample_limit_s=15):
         # Explicit opt-in prevents unintentional motor activation at service startup.
-        if os.environ.get('CTD_HYBRID_SITL_ENABLE') != '1':
+        if not config.HYBRID_SITL_MODE:
             raise RuntimeError('Set CTD_HYBRID_SITL_ENABLE=1 on isolated bench only')
         if type(depth_limit) not in (int,float) or not 0 < depth_limit <= 2.0:
             raise ValueError('Hybrid depth ceiling must be <= 2 m')
@@ -250,6 +251,8 @@ class HybridSITL:
             if not stations:
                 raise RuntimeError('No CTD stations configured')
             mission=mission_monitor.snapshot(); audit=mission_audit.snapshot()
+            if (mission['sourceSystem'], mission['sourceComponent']) != config.HYBRID_SOURCE or (audit['sourceSystem'], audit['sourceComponent']) != config.HYBRID_SOURCE:
+                raise RuntimeError('Dedicated SITL source required')
             if not mission['telemetryFresh'] or not audit['missionValidated']:
                 raise RuntimeError('Fresh mission readback and telemetry required')
             if audit.get('snapshotAgeSeconds',1e9)>30:
@@ -284,7 +287,7 @@ class HybridSITL:
             self.stop_event.set()
             self.advance_request = None
             if self.phase not in ('finished', 'fault'):
-                self.phase = 'stopped'
+                self.phase = 'stopping'
             worker = self.worker
         try:
             depth_control.cancel(stop=True)
@@ -320,7 +323,7 @@ class HybridSITL:
 
     def _evidence(self, station, require_loiter=True):
         mission=mission_monitor.snapshot();audit=mission_audit.snapshot()
-        if not mission['telemetryFresh'] or tuple((mission['sourceSystem'],mission['sourceComponent']))!=self.source:
+        if self.source != config.HYBRID_SOURCE or not mission['telemetryFresh'] or tuple((mission['sourceSystem'],mission['sourceComponent']))!=self.source:
             raise RuntimeError('MAVLink mission source lost or changed')
         if not audit['missionValidated'] or audit['auditGeneration']!=self.audit_generation:
             raise RuntimeError('Mission validation changed or expired')
@@ -409,8 +412,6 @@ class HybridSITL:
                     else:stable=None
                     if self.stop_event.wait(.2):raise RuntimeError('Stopped')
                 else:raise RuntimeError('Station arrival timed out')
-                with self.lock:
-                    self.audit_generation=mission_audit.snapshot()['auditGeneration']
                 self._cycle(station)
                 # Check motor ownership and fresh HOME again before ANY mission advancement.
                 if ownership.snapshot()['owner']!='manual':raise RuntimeError('Motor ownership not released')
@@ -435,7 +436,7 @@ class HybridSITL:
             with self.lock:self.phase='finished'
         except Exception as exc:
             with self.lock:
-                if self.phase!='stopped':self.phase='fault';self.error=str(exc)
+                if self.phase not in ('stopped','stopping'):self.phase='fault';self.error=str(exc)
                 self.advance_request=None
             self.stop_event.set()
             try:depth_control.cancel(stop=True)

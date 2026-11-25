@@ -2,6 +2,7 @@
 
 Requests mission metadata/items only. Never changes mission or vehicle state.
 """
+import config
 import math
 import time
 from threading import RLock
@@ -63,12 +64,15 @@ class MissionAudit:
 
     def start(self, stations, system, component):
         with self.lock:
-            if self.phase in ('waiting_count', 'downloading'):
+            if self.phase in ('request_list', 'waiting_count', 'downloading', 'ack_pending'):
                 return False, 'Mission download already in progress'
             if not stations:
                 return False, 'No CTD stations configured'
             if not system or not component:
                 return False, 'No autopilot telemetry source available'
+            if not config.accepts_autopilot(system, component):
+                return False, 'Unexpected hybrid autopilot identity'
+            self.requested_seq = None
             self.generation += 1
             self.phase = 'request_list'
             self.error = None
@@ -89,11 +93,25 @@ class MissionAudit:
 
     def tick(self, conn):
         with self.lock:
-            if self.phase not in ('request_list', 'waiting_count', 'downloading'):
+            if self.phase not in ('request_list', 'waiting_count', 'downloading', 'ack_pending'):
                 return
             now = time.monotonic()
             if now > self.deadline:
                 self._fail('Mission download timed out; no validation performed')
+                return
+            if not config.accepts_autopilot(*self.target):
+                self._fail('Unexpected autopilot identity')
+                return
+            if self.phase == 'ack_pending':
+                try:
+                    conn.mav.mission_ack_send(*self.target, 0, MISSION_TYPE)
+                except Exception as exc:
+                    self._fail(f'Mission acknowledgement failed: {exc}')
+                    return
+                errors = validate_items(self.stations, self.items)
+                self.result = {'valid': not errors, 'errors': errors, 'itemCount': self.count}
+                self.phase = 'complete'
+                self.completed_at = now
                 return
             if now - self.last_request < 1.0:
                 return
@@ -105,6 +123,7 @@ class MissionAudit:
                 else:
                     missing = next((i for i in range(self.count) if i not in self.items), None)
                     if missing is not None:
+                        self.requested_seq = missing
                         conn.mav.mission_request_int_send(system, component, missing, MISSION_TYPE)
             except Exception as exc:
                 self._fail(f'Mission request failed: {exc}')
@@ -116,6 +135,10 @@ class MissionAudit:
             if self.phase not in ('waiting_count', 'downloading') or not self.target:
                 return
             if (message.get_srcSystem(), message.get_srcComponent()) != self.target:
+                return
+            if (getattr(message, 'target_system', None), getattr(message, 'target_component', None)) != (config.MAVLINK_CLIENT_SYSTEM, config.MAVLINK_CLIENT_COMPONENT):
+                return
+            if getattr(message, 'mission_type', MISSION_TYPE) != MISSION_TYPE:
                 return
             if kind == 'MISSION_COUNT' and self.phase == 'waiting_count':
                 if getattr(message, 'mission_type', MISSION_TYPE) != MISSION_TYPE:
@@ -131,7 +154,7 @@ class MissionAudit:
                 if getattr(message, 'mission_type', MISSION_TYPE) != MISSION_TYPE:
                     return
                 seq = int(message.seq)
-                if not 0 <= seq < self.count:
+                if seq != self.requested_seq or seq in self.items or not 0 <= seq < self.count:
                     return
                 if kind == 'MISSION_ITEM_INT':
                     lat, lon = float(message.x) / 1e7, float(message.y) / 1e7
@@ -141,12 +164,10 @@ class MissionAudit:
                     self._fail('Invalid mission coordinates received')
                     return
                 self.items[seq] = {'command': int(message.command), 'latitude': lat, 'longitude': lon}
+                self.requested_seq = None
                 self.last_request = 0.0
                 if len(self.items) == self.count:
-                    errors = validate_items(self.stations, self.items)
-                    self.result = {'valid': not errors, 'errors': errors, 'itemCount': self.count}
-                    self.phase = 'complete'
-                    self.completed_at = time.monotonic()
+                    self.phase = 'ack_pending'
             elif kind == 'MISSION_ACK' and self.phase in ('waiting_count', 'downloading'):
                 if int(message.type) != 0:  # MAV_MISSION_ACCEPTED
                     self._fail(f'Autopilot rejected mission request (code {message.type})')
@@ -168,6 +189,9 @@ class MissionAudit:
                 'missionItemCount': self.count,
                 'receivedItemCount': len(self.items),
                 'errors': self.result['errors'] if self.result else ([self.error] if self.error else []),
+                'sourceSystem': self.target[0] if self.target else None,
+                'sourceComponent': self.target[1] if self.target else None,
+                'items': {k: dict(v) for k,v in self.items.items()},
                 'executionEnabled': False,
             }
 

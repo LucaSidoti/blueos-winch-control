@@ -1,5 +1,7 @@
 """Translate MAVLink servo signals into shared motor control commands."""
 
+import os
+os.environ.setdefault("MAVLINK20", "1")
 from pymavlink import mavutil
 import config
 import control
@@ -59,7 +61,9 @@ def mavlink_listener():
 
     try:
         connection = mavutil.mavlink_connection(
-            f"udpin:0.0.0.0:{config.MAVLINK_PORT}"
+            f"udpin:0.0.0.0:{config.MAVLINK_PORT}",
+            source_system=config.MAVLINK_CLIENT_SYSTEM,
+            source_component=config.MAVLINK_CLIENT_COMPONENT
         )
     except Exception as exc:
         print(
@@ -79,13 +83,16 @@ def mavlink_listener():
             if request is None:
                 last_advance=None
             elif request != last_advance:
-                mission=mission_monitor.snapshot()
-                if (mission.get('telemetryFresh') and
-                    hybrid_sitl.snapshot().get('phase')=='advancing' and
-                    hybrid_sitl.source == (mission.get('sourceSystem'),mission.get('sourceComponent'))):
-                    connection.mav.mission_set_current_send(mission['sourceSystem'],
-                                                            mission['sourceComponent'],int(request))
-                    last_advance=request
+                with hybrid_sitl.lock:
+                    mission = mission_monitor.snapshot()
+                    if (config.HYBRID_SITL_MODE and not hybrid_sitl.stop_event.is_set()
+                        and hybrid_sitl.advance_request == request
+                        and hybrid_sitl.phase == 'advancing'
+                        and hybrid_sitl.source == config.HYBRID_SOURCE
+                        and mission.get('telemetryFresh')
+                        and (mission.get('sourceSystem'), mission.get('sourceComponent')) == config.HYBRID_SOURCE):
+                        connection.mav.mission_set_current_send(*config.HYBRID_SOURCE, int(request))
+                        last_advance = request
             message = connection.recv_match(
                 type=["SERVO_OUTPUT_RAW", "MISSION_CURRENT", "MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ITEM", "MISSION_ACK", "GLOBAL_POSITION_INT", "GPS_RAW_INT", "HEARTBEAT"],
                 blocking=True,
@@ -93,6 +100,13 @@ def mavlink_listener():
             )
 
             if message is None:
+                continue
+
+            if not config.accepts_autopilot(message.get_srcSystem(), message.get_srcComponent()):
+                continue
+
+            # No MAVLink joystick motion or servo reset in hybrid bench mode.
+            if config.HYBRID_SITL_MODE and message.get_type() == "SERVO_OUTPUT_RAW":
                 continue
 
             if message.get_type() == "HEARTBEAT":

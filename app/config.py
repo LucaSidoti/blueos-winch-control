@@ -222,3 +222,12 @@ HOME_TOLERANCE_M = 0.02
 # Position tracker sanity limit. The safety monitor samples during
 # all motion, so a larger jump indicates lost/invalid encoder tracking.
 ENCODER_MAX_DELTA_COUNTS = 600
+# Hybrid bench mode: fixed identity, never fall back to the physical autopilot.
+import os
+HYBRID_SITL_MODE = os.environ.get('CTD_HYBRID_SITL_ENABLE') == '1'
+HYBRID_SOURCE = (42, 1)
+MAVLINK_CLIENT_SYSTEM = 245
+MAVLINK_CLIENT_COMPONENT = 191
+
+def accepts_autopilot(system, component):
+    return not HYBRID_SITL_MODE or (system, component) == HYBRID_SOURCE

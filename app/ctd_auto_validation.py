@@ -20,7 +20,7 @@ class AutoValidation:
         with self.lock:
             state = audit.snapshot()
             phase = state.get('status')
-            if phase in ('request_list', 'waiting_count', 'downloading'):
+            if phase in ('request_list', 'waiting_count', 'downloading', 'ack_pending'):
                 self.last_result = 'download_in_progress'
                 return False
             if physical_cycle_phase in ('armed_waiting_for_simulated_arrival', 'deploying',
